@@ -94,6 +94,9 @@ class YOLOTrackerEngine:
         
         # Smoothed speed history per track ID (stores recent speed values for rolling average)
         self.speed_history: Dict[int, deque] = defaultdict(lambda: deque(maxlen=8))
+        self.cached_detections: List[DetectionResult] = []
+        self.cached_class_counts: Dict[str, int] = {}
+        self.cached_active_ids: List[int] = []
 
         self.prev_time = time.time()
         self.current_fps = 0.0
@@ -170,6 +173,7 @@ class YOLOTrackerEngine:
         self,
         raw_frame: np.ndarray,
         draw_annotations: bool = True,
+        skip_inference: bool = False,
     ) -> Tuple[np.ndarray, List[DetectionResult], Dict]:
         self.frame_number += 1
         now = time.time()
@@ -184,19 +188,6 @@ class YOLOTrackerEngine:
         clean_sensor_frame = frame.copy()
         annotated_frame = frame.copy() if draw_annotations else frame
 
-        allowed_classes = CLASS_FILTERS.get(self.tactical_mode, None)
-
-        results = self.model.track(
-            source=frame,
-            persist=True,
-            tracker=self.tracker_type,
-            conf=self.conf_threshold,
-            iou=self.iou_threshold,
-            classes=allowed_classes,
-            imgsz=384,
-            verbose=False,
-        )
-
         detections: List[DetectionResult] = []
         centers: Dict[int, Tuple[int, int]] = {}
         active_ids: List[int] = []
@@ -205,77 +196,100 @@ class YOLOTrackerEngine:
         fastest_det: Optional[DetectionResult] = None
         max_speed = 0.0
 
-        if results and len(results) > 0 and results[0].boxes is not None:
-            boxes = results[0].boxes
-            names = results[0].names
-
-            for box in boxes:
-                xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
-                conf = float(box.conf[0].cpu().numpy())
-                cls_id = int(box.cls[0].cpu().numpy())
-                cls_name = names.get(cls_id, f"cls_{cls_id}").upper()
-
-                track_id = int(box.id[0].cpu().numpy()) if box.id is not None else None
-                curr_center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-
-                dx, dy = 0.0, 0.0
-                speed_px = 0.0
-                speed_kmh = 0.0
-                speed_px_s = 0.0
-                bearing = 0.0
-
-                if track_id is not None:
-                    if track_id in self.prev_positions:
-                        px, py = self.prev_positions[track_id]
-                        dx = float(curr_center[0] - px)
-                        dy = float(curr_center[1] - py)
-                        displacement = math.hypot(dx, dy)
-                        speed_px = displacement
-
-                        # Speed calculation for moving and walking objects
-                        if displacement > 0.2:
-                            raw_px_s = displacement * effective_fps
-                            # Add to rolling history
-                            self.speed_history[track_id].append(raw_px_s)
-                            smooth_px_s = sum(self.speed_history[track_id]) / len(self.speed_history[track_id])
-                            speed_px_s = smooth_px_s
-                            # Convert pixels/s to km/h using pixels_per_meter
-                            ppm = max(1.0, self.pixels_per_meter)
-                            speed_kmh = (smooth_px_s / ppm) * 3.6
-                        else:
-                            self.speed_history[track_id].append(0.0)
-                            speed_kmh = 0.0
-                            speed_px_s = 0.0
-
-                        rad = math.atan2(dx, -dy)
-                        bearing = (math.degrees(rad) + 360.0) % 360.0
-
-                    self.prev_positions[track_id] = curr_center
-                    active_ids.append(track_id)
-                    centers[track_id] = curr_center
-
-                det = DetectionResult(
-                    box=(x1, y1, x2, y2),
-                    track_id=track_id,
-                    class_id=cls_id,
-                    class_name=cls_name,
-                    confidence=conf,
-                    velocity=(dx, dy),
-                    speed=speed_px,
-                    speed_kmh=speed_kmh,
-                    speed_px_s=speed_px_s,
-                    bearing=bearing,
-                )
-                detections.append(det)
-                class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
-
-                if speed_kmh > max_speed:
-                    max_speed = speed_kmh
+        if skip_inference and self.cached_detections:
+            detections = self.cached_detections
+            class_counts = self.cached_class_counts
+            active_ids = self.cached_active_ids
+            for det in detections:
+                if det.track_id is not None:
+                    centers[det.track_id] = det.center
+                if det.speed_kmh > max_speed:
+                    max_speed = det.speed_kmh
                     fastest_det = det
+        else:
+            allowed_classes = CLASS_FILTERS.get(self.tactical_mode, None)
 
-                if self.locked_target_id is not None and track_id == self.locked_target_id:
-                    locked_det = det
+            results = self.model.track(
+                source=frame,
+                persist=True,
+                tracker=self.tracker_type,
+                conf=self.conf_threshold,
+                iou=self.iou_threshold,
+                classes=allowed_classes,
+                imgsz=384,
+                verbose=False,
+            )
+
+            if results and len(results) > 0 and results[0].boxes is not None:
+                boxes = results[0].boxes
+                names = results[0].names
+
+                for box in boxes:
+                    xyxy = box.xyxy[0].cpu().numpy().astype(int)
+                    x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls_id = int(box.cls[0].cpu().numpy())
+                    cls_name = names.get(cls_id, f"cls_{cls_id}").upper()
+
+                    track_id = int(box.id[0].cpu().numpy()) if box.id is not None else None
+                    curr_center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+
+                    dx, dy = 0.0, 0.0
+                    speed_px = 0.0
+                    speed_kmh = 0.0
+                    speed_px_s = 0.0
+                    bearing = 0.0
+
+                    if track_id is not None:
+                        if track_id in self.prev_positions:
+                            px, py = self.prev_positions[track_id]
+                            dx = float(curr_center[0] - px)
+                            dy = float(curr_center[1] - py)
+                            displacement = math.hypot(dx, dy)
+                            speed_px = displacement
+
+                            # Speed calculation for moving and walking objects
+                            if displacement > 0.1:
+                                raw_px_s = displacement * effective_fps
+                                self.speed_history[track_id].append(raw_px_s)
+                                smooth_px_s = sum(self.speed_history[track_id]) / len(self.speed_history[track_id])
+                                speed_px_s = smooth_px_s
+                                ppm = max(1.0, self.pixels_per_meter)
+                                speed_kmh = (smooth_px_s / ppm) * 3.6
+                            else:
+                                self.speed_history[track_id].append(0.0)
+                                speed_kmh = 0.0
+                                speed_px_s = 0.0
+
+                            rad = math.atan2(dx, -dy)
+                            bearing = (math.degrees(rad) + 360.0) % 360.0
+
+                        self.prev_positions[track_id] = curr_center
+                        active_ids.append(track_id)
+                        centers[track_id] = curr_center
+
+                    det = DetectionResult(
+                        box=(x1, y1, x2, y2),
+                        track_id=track_id,
+                        class_id=cls_id,
+                        class_name=cls_name,
+                        confidence=conf,
+                        velocity=(dx, dy),
+                        speed=speed_px,
+                        speed_kmh=speed_kmh,
+                        speed_px_s=speed_px_s,
+                        bearing=bearing,
+                    )
+                    detections.append(det)
+                    class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
+
+                    if speed_kmh > max_speed:
+                        max_speed = speed_kmh
+                        fastest_det = det
+
+            self.cached_detections = detections
+            self.cached_class_counts = class_counts
+            self.cached_active_ids = active_ids
 
         # Store for user coordinate click selection
         fh, fw = frame.shape[:2]

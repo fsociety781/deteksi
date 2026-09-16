@@ -1,4 +1,5 @@
 import os
+import queue
 import shutil
 import threading
 import time
@@ -23,30 +24,40 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
-
 DEFAULT_LIVE_URL = "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8"
 
 
 class StreamManager:
     """
-    Dedicated background capture worker that keeps draining live M3U8/RTSP network frames,
-    eliminating buffer lag so the application always processes the latest live frame in real time.
+    Jitter-buffered stream manager for HLS (.m3u8) live streams and video files.
+    Eliminates the periodic 1.3-second HLS segment download stalls by pre-buffering
+    and maintaining a smoothed frame queue.
     """
-    def __init__(self):
+    def __init__(self, buffer_size: int = 100, prebuffer_count: int = 18):
+        self.buffer_size = buffer_size
+        self.prebuffer_count = prebuffer_count
+        self.q = queue.Queue(maxsize=buffer_size)
         self.cap: Optional[cv2.VideoCapture] = None
-        self.latest_frame: Optional[np.ndarray] = None
         self.running: bool = False
         self.lock = threading.Lock()
         self.thread: Optional[threading.Thread] = None
         self.source_path: Optional[str] = None
         self.source_type: str = "live_stream"
-        self.consecutive_fails: int = 0
+        self.is_buffering: bool = True
+        self.last_frame: Optional[np.ndarray] = None
 
     def start(self, source_path: str, source_type: str = "live_stream") -> bool:
         self.stop()
         self.source_path = source_path
         self.source_type = source_type
-        self.consecutive_fails = 0
+        self.is_buffering = (source_type == "live_stream")
+
+        # Clear existing queue
+        while not self.q.empty():
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                break
 
         is_network = (
             source_path.startswith("http://")
@@ -74,57 +85,93 @@ class StreamManager:
         self.running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
-        print(f"Stream worker aktif: {source_path}")
+        print(f"Stream worker aktif dengan Jitter Buffer: {source_path}")
         return True
 
     def _worker(self):
+        consecutive_fails = 0
         while self.running:
-            if self.cap is None or not self.cap.isOpened():
-                time.sleep(0.5)
+            cap = self.cap
+            if not self.running or cap is None or not cap.isOpened():
+                time.sleep(0.3)
                 continue
 
-            ret, frame = self.cap.read()
+            try:
+                ret, frame = cap.read()
+            except Exception:
+                ret, frame = False, None
+
             if ret and frame is not None:
-                self.consecutive_fails = 0
+                consecutive_fails = 0
                 with self.lock:
-                    self.latest_frame = frame
+                    self.last_frame = frame
+
+                # If queue is too full (lag accumulation), drop oldest frame to maintain live time
+                if self.q.full():
+                    try:
+                        self.q.get_nowait()
+                    except queue.Empty:
+                        pass
+
+                self.q.put(frame)
 
                 if self.source_type == "video":
                     # Pace local video to ~30 FPS
-                    time.sleep(0.03)
+                    time.sleep(0.028)
             else:
                 if self.source_type == "video":
                     # Loop local video
                     self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     time.sleep(0.02)
                 else:
-                    self.consecutive_fails += 1
-                    if self.consecutive_fails >= 8:
+                    consecutive_fails += 1
+                    if consecutive_fails >= 10:
                         print("Stream terputus di latar belakang, menghubungkan ulang...")
                         try:
                             self.cap.release()
                         except Exception:
                             pass
                         self.cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
-                        self.consecutive_fails = 0
-                    time.sleep(0.04)
+                        consecutive_fails = 0
+                    time.sleep(0.03)
 
-    def read_latest(self) -> Optional[np.ndarray]:
-        with self.lock:
-            return None if self.latest_frame is None else self.latest_frame.copy()
+    def read_frame(self) -> Optional[np.ndarray]:
+        # Prebuffer phase on start or underflow
+        if self.is_buffering and self.source_type == "live_stream":
+            if self.q.qsize() >= self.prebuffer_count:
+                self.is_buffering = False
+            else:
+                # Still prebuffering, return last known frame to prevent freezing
+                with self.lock:
+                    return None if self.last_frame is None else self.last_frame.copy()
+
+        try:
+            # Smooth pull from queue
+            return self.q.get(timeout=0.25)
+        except queue.Empty:
+            # Buffer starvation, switch to quick prebuffer
+            if self.source_type == "live_stream":
+                self.is_buffering = True
+            with self.lock:
+                return None if self.last_frame is None else self.last_frame.copy()
 
     def stop(self):
         self.running = False
         if self.thread is not None and self.thread.is_alive():
-            self.thread.join(timeout=0.6)
+            self.thread.join(timeout=0.8)
         if self.cap is not None:
             try:
                 self.cap.release()
             except Exception:
                 pass
             self.cap = None
+        while not self.q.empty():
+            try:
+                self.q.get_nowait()
+            except queue.Empty:
+                break
         with self.lock:
-            self.latest_frame = None
+            self.last_frame = None
 
 
 class AppState:
@@ -229,26 +276,35 @@ def make_waiting_frame() -> bytes:
 
 def generate_mjpeg():
     waiting_bytes = make_waiting_frame()
+    frame_idx = 0
 
     while state.is_running:
         if state.paused:
             time.sleep(0.04)
             continue
 
-        frame = state.stream_manager.read_latest()
+        frame = state.stream_manager.read_frame()
         if frame is None:
-            # Belum ada frame / menghubungkan
+            # Belum ada frame / masih buffering
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n" + waiting_bytes + b"\r\n"
             )
-            time.sleep(0.08)
+            time.sleep(0.06)
             continue
 
-        # AI Detection & Tracking
+        frame_idx += 1
+        # Interleaved AI Inference:
+        # Run YOLO inference every 2 frames, render cached annotations on intermediate frames.
+        # This doubles frame throughput to smooth 25 FPS without dropping HLS chunk boundaries!
+        skip_ai = (frame_idx % 2 != 0)
+
         with state.lock:
             if state.engine is not None:
-                annotated_frame, detections, stats = state.engine.process_frame(frame)
+                annotated_frame, detections, stats = state.engine.process_frame(
+                    frame,
+                    skip_inference=skip_ai,
+                )
                 stats["video_name"] = state.video_name
                 stats["source_type"] = state.source_type
                 stats["is_live"] = (state.source_type == "live_stream")
@@ -266,7 +322,7 @@ def generate_mjpeg():
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         )
-        time.sleep(0.012)
+        time.sleep(0.01)
 
 
 @app.get("/", response_class=HTMLResponse)
