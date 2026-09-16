@@ -26,7 +26,7 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 class AppState:
     def __init__(self):
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.source_type = "video"
         default_video = os.path.join(BASE_DIR, "sample_test.mp4")
         self.source_path: Optional[str] = default_video if os.path.exists(default_video) else None
@@ -36,9 +36,6 @@ class AppState:
             "fps": 0.0,
             "acquisition_rate": "0 Hz",
             "active_objects": 0,
-            "total_counted": 0,
-            "in_count": 0,
-            "out_count": 0,
             "classes": {},
             "tactical_mode": "all",
             "sensor_mode": "eo",
@@ -57,23 +54,32 @@ class AppState:
                 sensor_mode="eo",
             )
 
-    def init_capture(self):
+    def init_capture(self) -> bool:
         with self.lock:
             if self.cap is not None:
-                self.cap.release()
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
                 self.cap = None
 
             if self.source_path and os.path.exists(self.source_path):
-                self.cap = cv2.VideoCapture(self.source_path)
-                if self.cap.isOpened() and self.engine is not None:
+                # Try opening video file
+                cap = cv2.VideoCapture(self.source_path)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
+
+                if cap.isOpened():
+                    self.cap = cap
                     ret, test_frame = self.cap.read()
-                    if ret:
-                        fh, fw = test_frame.shape[:2]
-                        self.engine.set_line_coords(
-                            (int(fw * 0.1), int(fh * 0.55)),
-                            (int(fw * 0.9), int(fh * 0.55)),
-                        )
+                    if ret and test_frame is not None:
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    print(f"Video capture aktif: {self.source_path}")
+                    return True
+                else:
+                    print(f"Gagal membuka video capture: {self.source_path}")
+                    return False
+            return False
 
 
 state = AppState()
@@ -144,29 +150,38 @@ def generate_mjpeg():
 
     while state.is_running:
         if state.paused:
-            time.sleep(0.05)
+            time.sleep(0.04)
             continue
 
+        frame = None
         with state.lock:
-            if state.cap is None or not state.cap.isOpened():
-                frame_bytes = waiting_bytes
-                yield (
-                    b"--frame\r\n"
-                    b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
-                )
-                time.sleep(0.5)
-                continue
+            if state.cap is not None and state.cap.isOpened():
+                ret, raw_frame = state.cap.read()
+                if not ret:
+                    state.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ret, raw_frame = state.cap.read()
+                if ret and raw_frame is not None:
+                    frame = raw_frame.copy()
 
-            ret, frame = state.cap.read()
-            if not ret:
-                state.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                time.sleep(0.01)
-                continue
+        if frame is None:
+            # Tidak ada feed aktif / menunggu upload video
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + waiting_bytes + b"\r\n"
+            )
+            time.sleep(0.2)
+            continue
 
-            annotated_frame, detections, stats = state.engine.process_frame(frame)
-            stats["video_name"] = state.video_name
-            state.latest_stats = stats
+        # AI Detection & Tracking
+        with state.lock:
+            if state.engine is not None:
+                annotated_frame, detections, stats = state.engine.process_frame(frame)
+                stats["video_name"] = state.video_name
+                state.latest_stats = stats
+            else:
+                annotated_frame = frame
 
+        # JPEG Encoding & Yield di LUAR lock
         success, buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
         if not success:
             continue
@@ -176,7 +191,7 @@ def generate_mjpeg():
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n"
         )
-        time.sleep(0.01)
+        time.sleep(0.012)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -247,6 +262,41 @@ def update_settings(payload: SettingsPayload):
     return {"status": "ok", "message": "Konfigurasi diperbarui"}
 
 
+class TargetSelectPayload(BaseModel):
+    norm_x: Optional[float] = None
+    norm_y: Optional[float] = None
+    track_id: Optional[int] = None
+
+
+@app.post("/api/select_target")
+def select_target(payload: TargetSelectPayload):
+    with state.lock:
+        if state.engine is None:
+            return {"status": "error", "message": "Engine belum siap"}
+
+        if payload.track_id is not None:
+            state.engine.locked_target_id = payload.track_id
+            state.engine.smooth_pip_center = None
+            return {"status": "ok", "locked_id": payload.track_id}
+        elif payload.norm_x is not None and payload.norm_y is not None:
+            locked_id, class_name = state.engine.select_target_by_coord(payload.norm_x, payload.norm_y)
+            return {
+                "status": "ok" if locked_id is not None else "not_found",
+                "locked_id": locked_id,
+                "class_name": class_name,
+            }
+
+    return {"status": "error", "message": "Parameter tidak valid"}
+
+
+@app.post("/api/release_target")
+def release_target():
+    with state.lock:
+        if state.engine is not None:
+            state.engine.release_target()
+    return {"status": "ok", "message": "Kunci target dilepaskan"}
+
+
 @app.post("/api/toggle_pause")
 def toggle_pause():
     state.paused = not state.paused
@@ -267,26 +317,44 @@ def reset_counter():
 
 @app.post("/api/upload")
 async def upload_video(file: UploadFile = File(...)):
-    filename = f"upload_{int(time.time())}_{file.filename}"
-    filepath = os.path.join(UPLOADS_DIR, filename)
+    try:
+        # Sanitize filename
+        safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._- ")
+        if not safe_name:
+            safe_name = "video.mp4"
+        filename = f"upload_{int(time.time())}_{safe_name}"
+        filepath = os.path.join(UPLOADS_DIR, filename)
 
-    with open(filepath, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        with open(filepath, "wb") as buffer:
+            while chunk := await file.read(1024 * 1024):
+                buffer.write(chunk)
 
-    with state.lock:
-        state.source_type = "video"
-        state.source_path = filepath
-        state.video_name = file.filename
-        state.init_capture()
-        if state.engine is not None:
-            state.engine.counter.in_count = 0
-            state.engine.counter.out_count = 0
-            state.engine.counter.total_count = 0
-            state.engine.counter.counted_ids.clear()
-            state.engine.visualizer.track_history.clear()
-            state.engine.locked_target_id = None
+        with state.lock:
+            state.source_type = "video"
+            state.source_path = filepath
+            state.video_name = file.filename
+            success = state.init_capture()
+            if state.engine is not None:
+                state.engine.visualizer.track_history.clear()
+                state.engine.locked_target_id = None
+                state.engine.smooth_pip_center = None
 
-    return {"status": "ok", "filename": filename, "message": "Video berhasil diunggah!"}
+        if not success:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "Video berhasil disimpan, namun format codec tidak dapat diputar OpenCV. Silakan gunakan format MP4 standard (H.264/AVC).",
+                },
+            )
+
+        return {"status": "ok", "filename": filename, "message": "Video berhasil diunggah dan siap dianalisis!"}
+    except Exception as e:
+        print("Upload error:", e)
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "message": f"Terjadi kesalahan: {str(e)}"},
+        )
 
 
 if __name__ == "__main__":

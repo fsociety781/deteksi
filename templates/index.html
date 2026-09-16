@@ -97,11 +97,15 @@
         </div>
 
         <!-- Video Canvas -->
-        <div class="stream-display-wrapper">
-          <img id="videoFeed" src="/video_feed" alt="SpectraTrack Video Feed" class="stream-element" onerror="handleStreamError()">
+        <div class="stream-display-wrapper" id="streamWrapper">
+          <img id="videoFeed" src="/video_feed" alt="SpectraTrack Video Feed" class="stream-element" onerror="handleStreamError()" style="cursor: crosshair;">
           <div id="streamPlaceholder" class="stream-placeholder" style="display: none;">
             <div class="loading-ring"></div>
             <p>MENGHUBUNGKAN KE FEED VIDEO...</p>
+          </div>
+          <div class="video-click-prompt" id="videoClickPrompt">
+            <span class="click-pulse-dot"></span>
+            <span>🎯 Klik langsung mobil/objek pada layar video untuk mengunci target</span>
           </div>
         </div>
 
@@ -111,8 +115,9 @@
             <span class="hud-label">HEADING:</span> <strong id="lblBearing">000° UTARA</strong>
           </div>
           <div class="hud-stat-item">
-            <span class="hud-label">STATUS TARGET:</span> <strong class="status-tracking" id="lblLockStatus">PELACAKAN BERJALAN</strong>
+            <span class="hud-label">STATUS TARGET:</span> <strong class="status-tracking" id="lblLockStatus">PILIH OBJEK</strong>
           </div>
+          <button id="btnUnlockTarget" class="btn-unlock-target" style="display: none;" title="Lepas fokus target">🔓 LEPAS KUNCI</button>
         </div>
       </div>
 
@@ -244,14 +249,32 @@
           </select>
         </div>
 
-        <!-- Visual Toggles & Auto-Follow Zoom -->
+
+        <!-- Target Selection Control (Manual Mode) -->
+        <div class="input-setting-group manual-selection-box">
+          <div class="slider-caption-row">
+            <label for="selectManualTarget">🎯 PILIH TARGET MANUAL</label>
+            <span class="slider-numeric-val" id="lblTargetSelected">BELUM ADA</span>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <select id="selectManualTarget" class="custom-dropdown" style="flex: 1; font-size: 0.82rem;">
+              <option value="">-- Klik Layar Video / Pilih ID --</option>
+            </select>
+            <button type="button" id="btnReleaseTarget" class="btn-release-target" title="Lepas Kunci">🔓 Lepas</button>
+          </div>
+          <small class="setting-caption-hint" style="display: block; margin-top: 6px; font-size: 0.72rem; color: var(--text-dark);">
+            💡 Klik langsung mobil di video atau pilih dari menu di atas.
+          </small>
+        </div>
+
+        <!-- Visual Toggles & Zoom -->
         <div class="input-setting-group">
           <label class="setting-sub-label">PELACAKAN & OVERLAY</label>
 
           <label class="checkbox-container">
             <input type="checkbox" id="chkPipZoom" checked>
             <span class="custom-checkmark"></span>
-            <span style="font-weight: 600; color: #ff4d6d;">🔍 Jendela Zoom Otomatis (Ikuti Objek Bergerak)</span>
+            <span style="font-weight: 600; color: #ff4d6d;">🔍 Jendela Zoom (Ikuti Objek Pilihan)</span>
           </label>
 
           <div class="zoom-level-row" style="display: flex; align-items: center; justify-content: space-between; margin-left: 28px; margin-bottom: 6px;">
@@ -273,8 +296,8 @@
 
         <!-- Helpful Feature Notes -->
         <div class="feature-tip-card">
-          <div class="tip-header">🎯 AUTO-FOLLOW ZOOM:</div>
-          <p>Sistem otomatis mendeteksi objek yang bergerak (seperti mobil di jalan raya/jembatan) dan menampilkan jendela zoom berbingkai merah di pojok kanan atas yang terus mengikuti objek tersebut secara real-time.</p>
+          <div class="tip-header">🎯 CARA MENGIKUTI OBJEK:</div>
+          <p>Objek yang diikuti <b>tidak dipilih otomatis</b>, tetapi <b>bebas dipilih oleh Anda</b>! Cukup <b>klik mobil/objek mana saja pada video</b> (atau pilih dari menu Target di atas), maka jendela zoom dan telemetri akan langsung mengunci dan mengikuti objek tersebut.</p>
         </div>
       </div>
     </aside>

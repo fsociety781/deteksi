@@ -28,6 +28,13 @@ document.addEventListener("DOMContentLoaded", () => {
   const scaleValDisplay = document.getElementById("scaleValDisplay");
   const scalePresetBtns = document.querySelectorAll(".scale-preset-btn");
 
+  // Manual Target Selection Elements
+  const selectManualTarget = document.getElementById("selectManualTarget");
+  const btnReleaseTarget = document.getElementById("btnReleaseTarget");
+  const btnUnlockTarget = document.getElementById("btnUnlockTarget");
+  const lblTargetSelected = document.getElementById("lblTargetSelected");
+  const streamWrapper = document.getElementById("streamWrapper");
+
   // Mode & Sensor Buttons
   const modeButtons = document.querySelectorAll(".mode-pill");
   const sensorButtons = document.querySelectorAll(".sensor-pill");
@@ -74,7 +81,7 @@ document.addEventListener("DOMContentLoaded", () => {
         tValSpeed.textContent = locked.speed_kmh || "0.0 km/h";
         tValBearing.textContent = locked.bearing || "--";
         tValCoords.textContent = locked.coords || "--";
-        lblLockStatus.textContent = `TARGET TERFOKUS: #${locked.id}`;
+        lblLockStatus.textContent = `TARGET TERPILIH: #${locked.id}`;
         lblBearing.textContent = locked.bearing || "000°";
 
         if (valMainSpeed) {
@@ -89,15 +96,15 @@ document.addEventListener("DOMContentLoaded", () => {
           valSpeedSubtext.textContent = `${locked.speed_ms || '0.0 m/s'} | ${locked.speed_px || '0 px/s'}`;
         }
       } else {
-        lockBadge.textContent = "MEMINDAI";
-        lockBadge.style.color = "#f59e0b";
-        tValId.textContent = "MEMINDAI";
+        lockBadge.textContent = "MENUNGGU";
+        lockBadge.style.color = "#06b6d4";
+        tValId.textContent = "KLIK OBJEK";
         tValClass.textContent = "--";
         tValConf.textContent = "--";
         tValSpeed.textContent = "0.0 km/h";
         tValBearing.textContent = "--";
         tValCoords.textContent = "--";
-        lblLockStatus.textContent = "MEMINDAI FRAME";
+        lblLockStatus.textContent = "KLIK OBJEK PADA LAYAR";
 
         if (valMainSpeed) {
           valMainSpeed.style.color = "#10b981";
@@ -106,6 +113,36 @@ document.addEventListener("DOMContentLoaded", () => {
         if (valSpeedSubtext) {
           valSpeedSubtext.textContent = "0.0 m/s | 0 px/s";
         }
+      }
+
+      // Update Target Selector Dropdown
+      if (selectManualTarget) {
+        const activeTargets = data.active_targets || [];
+        const isUserInteracting = (document.activeElement === selectManualTarget);
+
+        if (!isUserInteracting) {
+          let html = `<option value="">-- ${activeTargets.length > 0 ? "Pilih Objek dari Daftar" : "Menunggu Deteksi..."} --</option>`;
+          activeTargets.forEach((t) => {
+            const isSel = (t.id === data.locked_target_id);
+            html += `<option value="${t.id}" ${isSel ? "selected" : ""}>#${t.id} - ${t.class} (${t.speed_kmh} km/h)</option>`;
+          });
+          selectManualTarget.innerHTML = html;
+        }
+      }
+
+      // Update Target Lock Status & Unlock Button
+      if (data.locked_target_id !== null && data.locked_target_id !== undefined) {
+        if (lblTargetSelected) {
+          lblTargetSelected.textContent = `TARGET #${data.locked_target_id}`;
+          lblTargetSelected.style.color = "#10b981";
+        }
+        if (btnUnlockTarget) btnUnlockTarget.style.display = "inline-block";
+      } else {
+        if (lblTargetSelected) {
+          lblTargetSelected.textContent = "BELUM ADA";
+          lblTargetSelected.style.color = "var(--text-dark)";
+        }
+        if (btnUnlockTarget) btnUnlockTarget.style.display = "none";
       }
 
       // Update Detected Classes Badges
@@ -251,6 +288,68 @@ document.addEventListener("DOMContentLoaded", () => {
     updateSettings({ enable_trails: e.target.checked });
   });
 
+  // Interactive Target Selection: Click directly on Video Feed
+  function showClickRipple(x, y) {
+    if (!streamWrapper) return;
+    const ripple = document.createElement("div");
+    ripple.className = "click-reticle-ripple";
+    ripple.style.left = `${x}px`;
+    ripple.style.top = `${y}px`;
+    streamWrapper.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 650);
+  }
+
+  videoFeed.addEventListener("click", async (e) => {
+    const rect = videoFeed.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    const normX = clickX / rect.width;
+    const normY = clickY / rect.height;
+
+    showClickRipple(clickX, clickY);
+
+    try {
+      const res = await fetch("/api/select_target", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ norm_x: normX, norm_y: normY }),
+      });
+      const data = await res.json();
+      fetchStats();
+    } catch (err) {
+      console.error("Gagal mengunci target:", err);
+    }
+  });
+
+  if (selectManualTarget) {
+    selectManualTarget.addEventListener("change", async (e) => {
+      const val = e.target.value;
+      if (!val) {
+        await fetch("/api/release_target", { method: "POST" });
+      } else {
+        await fetch("/api/select_target", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ track_id: parseInt(val) }),
+        });
+      }
+      fetchStats();
+    });
+  }
+
+  const unlockHandler = async () => {
+    try {
+      await fetch("/api/release_target", { method: "POST" });
+      if (selectManualTarget) selectManualTarget.value = "";
+      fetchStats();
+    } catch (err) {
+      console.error("Gagal melepas target:", err);
+    }
+  };
+
+  if (btnReleaseTarget) btnReleaseTarget.addEventListener("click", unlockHandler);
+  if (btnUnlockTarget) btnUnlockTarget.addEventListener("click", unlockHandler);
+
   // 9. Video Upload (Drag & Drop)
   dropzone.addEventListener("click", () => videoFileInput.click());
 
@@ -281,9 +380,12 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 
   async function handleFileUpload(file) {
+    if (!file) return;
+
     uploadProgress.style.display = "flex";
+    progressFill.style.background = "#06b6d4";
     progressFill.style.width = "40%";
-    uploadStatusText.textContent = `Memuat berkas: ${file.name}...`;
+    uploadStatusText.textContent = `Mengunggah berkas: ${file.name}...`;
 
     const formData = new FormData();
     formData.append("file", file);
@@ -294,11 +396,13 @@ document.addEventListener("DOMContentLoaded", () => {
         body: formData,
       });
 
-      if (!res.ok) throw new Error("Gagal mengunggah");
       const data = await res.json();
+      if (!res.ok || data.status !== "ok") {
+        throw new Error(data.message || "Gagal memproses berkas video");
+      }
 
       progressFill.style.width = "100%";
-      uploadStatusText.textContent = "Video siap! Memulai analisis...";
+      uploadStatusText.textContent = "Video siap! Menjalankan stream...";
       if (lblMissionFile) {
         lblMissionFile.textContent = file.name;
       }
@@ -306,11 +410,22 @@ document.addEventListener("DOMContentLoaded", () => {
       setTimeout(() => {
         uploadProgress.style.display = "none";
         progressFill.style.width = "0%";
-        btnRefresh.click();
-      }, 1000);
+        videoFileInput.value = "";
+        const baseSrc = videoFeed.src.split("?")[0];
+        videoFeed.src = `${baseSrc}?t=${Date.now()}`;
+        fetchStats();
+      }, 800);
     } catch (err) {
-      uploadStatusText.textContent = "Gagal memuat video.";
+      console.error("Upload error:", err);
+      uploadStatusText.textContent = `Gagal: ${err.message || "Gagal memuat video"}`;
       progressFill.style.background = "#f43f5e";
+      progressFill.style.width = "100%";
+      setTimeout(() => {
+        uploadProgress.style.display = "none";
+        progressFill.style.background = "#06b6d4";
+        progressFill.style.width = "0%";
+        videoFileInput.value = "";
+      }, 5000);
     }
   }
 
