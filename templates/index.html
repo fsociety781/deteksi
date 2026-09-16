@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SpectraTrack AI - Intelligent Multi-Target Detection & Dynamic Telemetry</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="ambient-glow"></div>
+
+  <!-- Main Top Bar -->
+  <header class="app-navbar">
+    <div class="brand-cluster">
+      <div class="brand-emblem">
+        <svg viewBox="0 0 32 32" fill="none">
+          <circle cx="16" cy="16" r="14" stroke="url(#cyanGrad)" stroke-width="2" stroke-dasharray="3 3"/>
+          <circle cx="16" cy="16" r="6" fill="#06b6d4"/>
+          <path d="M16 4V10M16 22V28M4 16H10M22 16H28" stroke="#06b6d4" stroke-width="2" stroke-linecap="round"/>
+          <defs>
+            <linearGradient id="cyanGrad" x1="0" y1="0" x2="32" y2="32">
+              <stop stop-color="#06b6d4"/>
+              <stop offset="1" stop-color="#8b5cf6"/>
+            </linearGradient>
+          </defs>
+        </svg>
+      </div>
+      <div>
+        <h1 class="brand-title">SpectraTrack <span class="accent-text">AI</span></h1>
+        <p class="brand-caption">Sistem Deteksi & Pelacakan Cerdas Multi-Target dengan Telemetri Vektor</p>
+      </div>
+    </div>
+
+    <!-- Sensor Channel Switcher -->
+    <div class="sensor-switch-group">
+      <span class="group-caption">SPEKTRUM LENSA:</span>
+      <button class="sensor-pill active" data-sensor="eo">OPTICAL (RGB)</button>
+      <button class="sensor-pill" data-sensor="flir">FLIR THERMAL</button>
+      <button class="sensor-pill" data-sensor="nvg">NIGHT VISION</button>
+    </div>
+
+    <!-- Live Telemetry Status -->
+    <div class="navbar-status">
+      <div class="status-chip">
+        <span class="pulse-beacon"></span>
+        <span class="chip-text">AI ENGINE: AKTIF</span>
+      </div>
+      <div class="frequency-chip">
+        <span id="txtRate">-- FPS</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <main class="dashboard-grid">
+    <!-- Center Section: Viewport & Telemetry Cards -->
+    <section class="main-viewport-section">
+      <!-- 4 Operational Modes Toolbar -->
+      <div class="mode-navigation-bar">
+        <span class="mode-nav-label">MODE PELACAKAN:</span>
+        <div class="mode-button-group">
+          <button class="mode-pill active" data-mode="all">
+            <span class="mode-symbol">🌐</span> SEMUA OBJEK
+          </button>
+          <button class="mode-pill" data-mode="vehicle">
+            <span class="mode-symbol">🚗</span> KENDARAAN & TRAFIK
+          </button>
+          <button class="mode-pill" data-mode="drone_air">
+            <span class="mode-symbol">🛸</span> OBJEK UDARA / DRONE
+          </button>
+          <button class="mode-pill" data-mode="person">
+            <span class="mode-symbol">🚶</span> PEJALAN KAKI / MANUSIA
+          </button>
+          <button class="mode-pill" data-mode="sentry">
+            <span class="mode-symbol">🛡️</span> PATROLI TRIPWIRE
+          </button>
+        </div>
+      </div>
+
+      <!-- Video Feed Player Frame -->
+      <div class="video-player-container">
+        <!-- Viewport Top HUD Strip -->
+        <div class="player-top-hud">
+          <div class="hud-stat-item">
+            <span class="hud-label">BERKAS AKTIF:</span> <strong id="lblMissionFile">sample_test.mp4</strong>
+          </div>
+          <div class="hud-stat-item">
+            <span class="hud-label">ENGINE:</span> <strong>YOLO11 + BYTETRACK</strong>
+          </div>
+          <div class="player-controls">
+            <button id="btnPause" class="player-control-btn" title="Pause / Lanjutkan">⏸️ JEDA</button>
+            <button id="btnRefresh" class="player-control-btn" title="Ulangi Pemutaran">🔄 REPLAY</button>
+          </div>
+        </div>
+
+        <!-- Video Canvas -->
+        <div class="stream-display-wrapper">
+          <img id="videoFeed" src="/video_feed" alt="SpectraTrack Video Feed" class="stream-element" onerror="handleStreamError()">
+          <div id="streamPlaceholder" class="stream-placeholder" style="display: none;">
+            <div class="loading-ring"></div>
+            <p>MENGHUBUNGKAN KE FEED VIDEO...</p>
+          </div>
+        </div>
+
+        <!-- Viewport Bottom HUD Strip -->
+        <div class="player-bottom-hud">
+          <div class="hud-stat-item">
+            <span class="hud-label">HEADING:</span> <strong id="lblBearing">000° UTARA</strong>
+          </div>
+          <div class="hud-stat-item">
+            <span class="hud-label">STATUS TARGET:</span> <strong class="status-tracking" id="lblLockStatus">PELACAKAN BERJALAN</strong>
+          </div>
+        </div>
+      </div>
+
+      <!-- Real-Time Metrics & Telemetry Grid -->
+      <div class="telemetry-cards-row" style="grid-template-columns: 1.3fr 1fr 1fr;">
+        <!-- Target Focus Telemetry Card -->
+        <div class="telemetry-card highlight-card">
+          <div class="card-top-row">
+            <span class="card-heading">🎯 TARGET UTAMA</span>
+            <span class="target-badge-status" id="lockBadge">TERKUNCI</span>
+          </div>
+          <div class="telemetry-metrics-grid">
+            <div class="telemetry-datum">
+              <span class="datum-label">TARGET ID</span>
+              <span class="datum-value accent-cyan" id="tValId">#1</span>
+            </div>
+            <div class="telemetry-datum">
+              <span class="datum-label">KATEGORI</span>
+              <span class="datum-value" id="tValClass">CAR</span>
+            </div>
+            <div class="telemetry-datum">
+              <span class="datum-label">AKURASI</span>
+              <span class="datum-value" id="tValConf">94%</span>
+            </div>
+            <div class="telemetry-datum">
+              <span class="datum-label">KECEPATAN</span>
+              <span class="datum-value accent-cyan" id="tValSpeed">0 km/h</span>
+            </div>
+            <div class="telemetry-datum">
+              <span class="datum-label">HEADING</span>
+              <span class="datum-value" id="tValBearing">145°</span>
+            </div>
+            <div class="telemetry-datum">
+              <span class="datum-label">KOORDINAT</span>
+              <span class="datum-value" id="tValCoords">X:320 Y:240</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-Time Speedometer Card -->
+        <div class="telemetry-card speed-card" style="border-color: rgba(16, 185, 129, 0.3);">
+          <div class="card-top-row">
+            <span class="card-heading">⚡ KECEPATAN OBJEK</span>
+            <span class="target-badge-status" style="background: rgba(16, 185, 129, 0.2); color: #10b981;">KM/H</span>
+          </div>
+          <div class="large-statistic-number" style="color: #10b981;" id="valMainSpeed">0.0 <small style="font-size: 1rem; color: var(--text-dark); font-weight: 500;">km/h</small></div>
+          <div class="datum-subtext" id="valSpeedSubtext">0.0 m/s | 0 px/s</div>
+        </div>
+
+        <!-- Simultaneous Target Count -->
+        <div class="telemetry-card">
+          <div class="card-top-row">
+            <span class="card-heading">📡 OBJEK AKTIF</span>
+            <span class="card-icon">🎯</span>
+          </div>
+          <div class="large-statistic-number" id="valActiveTracks">0</div>
+          <div class="datum-subtext">Objek dalam video</div>
+        </div>
+      </div>
+
+      <!-- Detected Classes Register -->
+      <div class="classification-drawer">
+        <h3 class="drawer-title">DAFTAR KATEGORI OBJEK YANG TERDETEKSI</h3>
+        <div id="classesContainer" class="detected-badges-wrap">
+          <span class="empty-notice">Menunggu deteksi objek pada video...</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Section: Video Upload & Dynamic Controls -->
+    <aside class="sidebar-controls-section">
+      <!-- Upload Panel -->
+      <div class="control-panel upload-container">
+        <h2 class="panel-header">📁 UNGGAH BERKAS VIDEO</h2>
+        <input type="file" id="videoFileInput" accept="video/mp4,video/avi,video/mov,video/mkv" style="display: none;">
+        <div class="upload-dropzone" id="dropzone">
+          <div class="dropzone-icon-box">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+          </div>
+          <p class="dropzone-title">Pilih atau Tarik Berkas Video</p>
+          <span class="dropzone-meta">Format MP4, AVI, MOV, MKV (Drone, Rekaman Jalan, CCTV)</span>
+          <button type="button" class="btn-select-file" style="pointer-events: none; margin-top: 14px;">PILIH VIDEO</button>
+        </div>
+
+        <div id="uploadProgress" class="upload-progress-wrapper" style="display: none;">
+          <div class="progress-track"><div class="progress-indicator" id="progressFill"></div></div>
+          <span id="uploadStatusText">Sedang mengunggah...</span>
+        </div>
+      </div>
+
+      <!-- Detection Parameters Panel -->
+      <div class="control-panel">
+        <h2 class="panel-header">⚙️ PENGATURAN PARAMETER</h2>
+
+        <!-- Confidence Slider -->
+        <div class="input-setting-group">
+          <div class="slider-caption-row">
+            <label for="confSlider">AMBANG BATAS AKURASI (CONFIDENCE)</label>
+            <span class="slider-numeric-val" id="confValDisplay">35%</span>
+          </div>
+          <input type="range" id="confSlider" min="10" max="90" value="35" class="custom-range-slider">
+        </div>
+
+        <!-- Speed Scale Calibration (Pixels per Meter) -->
+        <div class="input-setting-group">
+          <div class="slider-caption-row">
+            <label for="scaleSlider">KALIBRASI KECEPATAN (PIXEL / METER)</label>
+            <span class="slider-numeric-val" id="scaleValDisplay">12 px/m</span>
+          </div>
+          <input type="range" id="scaleSlider" min="3" max="40" value="12" class="custom-range-slider">
+          <div style="display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap;">
+            <button type="button" class="scale-preset-btn active" data-scale="12">Drone Udara (12)</button>
+            <button type="button" class="scale-preset-btn" data-scale="18">Jalan Tol (18)</button>
+            <button type="button" class="scale-preset-btn" data-scale="28">Jarak Dekat (28)</button>
+          </div>
+        </div>
+
+        <!-- Model Select -->
+        <div class="input-setting-group">
+          <label for="modelSelect">MODEL AI INFERENCE</label>
+          <select id="modelSelect" class="custom-dropdown">
+            <option value="yolo11n.pt" selected>YOLO11 Nano (Kecepatan Tinggi - Optimal CPU)</option>
+            <option value="yolov8n.pt">YOLOv8 Nano (Stabil)</option>
+            <option value="yolo11s.pt">YOLO11 Small (Presisi Tinggi)</option>
+          </select>
+        </div>
+
+        <!-- Visual Toggles & Auto-Follow Zoom -->
+        <div class="input-setting-group">
+          <label class="setting-sub-label">PELACAKAN & OVERLAY</label>
+
+          <label class="checkbox-container">
+            <input type="checkbox" id="chkPipZoom" checked>
+            <span class="custom-checkmark"></span>
+            <span style="font-weight: 600; color: #ff4d6d;">🔍 Jendela Zoom Otomatis (Ikuti Objek Bergerak)</span>
+          </label>
+
+          <div class="zoom-level-row" style="display: flex; align-items: center; justify-content: space-between; margin-left: 28px; margin-bottom: 6px;">
+            <span style="font-size: 0.76rem; color: var(--text-dark);">Tingkat Pembesaran Zoom:</span>
+            <select id="selectZoomLevel" class="custom-dropdown" style="padding: 4px 10px; font-size: 0.75rem;">
+              <option value="2.0">2.0x</option>
+              <option value="3.2" selected>3.2x (Optimal)</option>
+              <option value="4.0">4.0x</option>
+              <option value="5.0">5.0x</option>
+            </select>
+          </div>
+
+          <label class="checkbox-container">
+            <input type="checkbox" id="chkTrails" checked>
+            <span class="custom-checkmark"></span>
+            <span>Jejak Lintasan Pergerakan (Motion Trails)</span>
+          </label>
+        </div>
+
+        <!-- Helpful Feature Notes -->
+        <div class="feature-tip-card">
+          <div class="tip-header">🎯 AUTO-FOLLOW ZOOM:</div>
+          <p>Sistem otomatis mendeteksi objek yang bergerak (seperti mobil di jalan raya/jembatan) dan menampilkan jendela zoom berbingkai merah di pojok kanan atas yang terus mengikuti objek tersebut secara real-time.</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
