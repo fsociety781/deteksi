@@ -57,7 +57,7 @@ class YOLOTrackerEngine:
 
     def __init__(
         self,
-        model_name: str = "yolo11n.pt",
+        model_name: str = "yolo26n.pt",
         tracker_type: str = "bytetrack.yaml",
         conf_threshold: float = 0.25,
         iou_threshold: float = 0.5,

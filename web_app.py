@@ -196,7 +196,7 @@ class AppState:
         self.paused = False
         self.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung"
 
-    def init_engine(self, model_name: str = "yolo11n.pt", conf: float = 0.25):
+    def init_engine(self, model_name: str = "yolo26n.pt", conf: float = 0.25):
         with self.lock:
             self.engine = YOLOTrackerEngine(
                 model_name=model_name,
