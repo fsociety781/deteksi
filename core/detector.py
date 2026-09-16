@@ -193,6 +193,7 @@ class YOLOTrackerEngine:
             conf=self.conf_threshold,
             iou=self.iou_threshold,
             classes=allowed_classes,
+            imgsz=384,
             verbose=False,
         )
 

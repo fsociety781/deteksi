@@ -27,13 +27,112 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 DEFAULT_LIVE_URL = "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8"
 
 
+class StreamManager:
+    """
+    Dedicated background capture worker that keeps draining live M3U8/RTSP network frames,
+    eliminating buffer lag so the application always processes the latest live frame in real time.
+    """
+    def __init__(self):
+        self.cap: Optional[cv2.VideoCapture] = None
+        self.latest_frame: Optional[np.ndarray] = None
+        self.running: bool = False
+        self.lock = threading.Lock()
+        self.thread: Optional[threading.Thread] = None
+        self.source_path: Optional[str] = None
+        self.source_type: str = "live_stream"
+        self.consecutive_fails: int = 0
+
+    def start(self, source_path: str, source_type: str = "live_stream") -> bool:
+        self.stop()
+        self.source_path = source_path
+        self.source_type = source_type
+        self.consecutive_fails = 0
+
+        is_network = (
+            source_path.startswith("http://")
+            or source_path.startswith("https://")
+            or source_path.startswith("rtsp://")
+        )
+
+        print(f"Membuka sumber video: {source_path}")
+        if is_network:
+            self.cap = cv2.VideoCapture(source_path, cv2.CAP_FFMPEG)
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(source_path)
+        else:
+            if not os.path.exists(source_path):
+                print(f"File tidak ditemukan: {source_path}")
+                return False
+            self.cap = cv2.VideoCapture(source_path)
+            if not self.cap.isOpened():
+                self.cap = cv2.VideoCapture(source_path, cv2.CAP_FFMPEG)
+
+        if not self.cap.isOpened():
+            print(f"Gagal membuka capture: {source_path}")
+            return False
+
+        self.running = True
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+        print(f"Stream worker aktif: {source_path}")
+        return True
+
+    def _worker(self):
+        while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                time.sleep(0.5)
+                continue
+
+            ret, frame = self.cap.read()
+            if ret and frame is not None:
+                self.consecutive_fails = 0
+                with self.lock:
+                    self.latest_frame = frame
+
+                if self.source_type == "video":
+                    # Pace local video to ~30 FPS
+                    time.sleep(0.03)
+            else:
+                if self.source_type == "video":
+                    # Loop local video
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    time.sleep(0.02)
+                else:
+                    self.consecutive_fails += 1
+                    if self.consecutive_fails >= 8:
+                        print("Stream terputus di latar belakang, menghubungkan ulang...")
+                        try:
+                            self.cap.release()
+                        except Exception:
+                            pass
+                        self.cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
+                        self.consecutive_fails = 0
+                    time.sleep(0.04)
+
+    def read_latest(self) -> Optional[np.ndarray]:
+        with self.lock:
+            return None if self.latest_frame is None else self.latest_frame.copy()
+
+    def stop(self):
+        self.running = False
+        if self.thread is not None and self.thread.is_alive():
+            self.thread.join(timeout=0.6)
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        with self.lock:
+            self.latest_frame = None
+
+
 class AppState:
     def __init__(self):
         self.lock = threading.RLock()
+        self.stream_manager = StreamManager()
         self.source_type = "live_stream"
-        self.live_stream_url = DEFAULT_LIVE_URL
         self.source_path: Optional[str] = DEFAULT_LIVE_URL
-        self.cap: Optional[cv2.VideoCapture] = None
         self.engine: Optional[YOLOTrackerEngine] = None
         self.latest_stats = {
             "fps": 0.0,
@@ -49,7 +148,6 @@ class AppState:
         self.is_running = True
         self.paused = False
         self.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung"
-        self.consecutive_fails = 0
 
     def init_engine(self, model_name: str = "yolo11n.pt", conf: float = 0.25):
         with self.lock:
@@ -62,43 +160,9 @@ class AppState:
 
     def init_capture(self) -> bool:
         with self.lock:
-            if self.cap is not None:
-                try:
-                    self.cap.release()
-                except Exception:
-                    pass
-                self.cap = None
-
             if not self.source_path:
                 return False
-
-            is_network = (
-                self.source_path.startswith("http://")
-                or self.source_path.startswith("https://")
-                or self.source_path.startswith("rtsp://")
-            )
-
-            print(f"Membuka sumber video: {self.source_path}")
-            if is_network:
-                cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(self.source_path)
-            else:
-                if not os.path.exists(self.source_path):
-                    print(f"File tidak ditemukan: {self.source_path}")
-                    return False
-                cap = cv2.VideoCapture(self.source_path)
-                if not cap.isOpened():
-                    cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
-
-            if cap.isOpened():
-                self.cap = cap
-                self.consecutive_fails = 0
-                print(f"Video capture aktif: {self.source_path}")
-                return True
-            else:
-                print(f"Gagal membuka capture: {self.source_path}")
-                return False
+            return self.stream_manager.start(self.source_path, self.source_type)
 
 
 state = AppState()
@@ -112,8 +176,7 @@ async def lifespan(app: FastAPI):
     print("SpectraTrack AI siap di http://127.0.0.1:8000")
     yield
     state.is_running = False
-    if state.cap is not None:
-        state.cap.release()
+    state.stream_manager.stop()
 
 
 app = FastAPI(title="SpectraTrack AI - Detection & Multi-Object Tracking", lifespan=lifespan)
@@ -152,8 +215,8 @@ def make_waiting_frame() -> bytes:
     )
     cv2.putText(
         frame,
-        "Silakan unggah video rekaman Anda melalui panel di samping",
-        (w // 2 - 220, h // 2 + 75),
+        "Menghubungkan ke siaran video / stream CCTV...",
+        (w // 2 - 190, h // 2 + 75),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
         (160, 175, 190),
@@ -172,33 +235,14 @@ def generate_mjpeg():
             time.sleep(0.04)
             continue
 
-        frame = None
-        with state.lock:
-            if state.cap is not None and state.cap.isOpened():
-                ret, raw_frame = state.cap.read()
-                if not ret:
-                    if state.source_type == "video":
-                        state.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, raw_frame = state.cap.read()
-                    else:
-                        state.consecutive_fails += 1
-                        if state.consecutive_fails >= 5:
-                            print("Live stream terputus, mencoba menghubungkan ulang...")
-                            state.init_capture()
-                            state.consecutive_fails = 0
-                else:
-                    state.consecutive_fails = 0
-
-                if ret and raw_frame is not None:
-                    frame = raw_frame.copy()
-
+        frame = state.stream_manager.read_latest()
         if frame is None:
-            # Tidak ada feed aktif / menunggu upload video
+            # Belum ada frame / menghubungkan
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n" + waiting_bytes + b"\r\n"
             )
-            time.sleep(0.2)
+            time.sleep(0.08)
             continue
 
         # AI Detection & Tracking
