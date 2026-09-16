@@ -73,15 +73,16 @@ document.addEventListener("DOMContentLoaded", () => {
       // Update Primary Target Focus Card
       const locked = data.locked_target;
       if (locked && locked.id !== null) {
-        lockBadge.textContent = "TERKUNCI";
-        lockBadge.style.color = "#10b981";
+        const isManual = data.is_manual_lock;
+        lockBadge.textContent = isManual ? "KUNCI USER" : "OTOMATIS";
+        lockBadge.style.color = isManual ? "#10b981" : "#06b6d4";
         tValId.textContent = `#${locked.id}`;
         tValClass.textContent = locked.class || "OBJECT";
         tValConf.textContent = locked.conf || "--";
         tValSpeed.textContent = locked.speed_kmh || "0.0 km/h";
         tValBearing.textContent = locked.bearing || "--";
         tValCoords.textContent = locked.coords || "--";
-        lblLockStatus.textContent = `TARGET TERPILIH: #${locked.id}`;
+        lblLockStatus.textContent = isManual ? `TARGET KUNCI USER: #${locked.id}` : `MENGIKUTI OBJEK BERGERAK: #${locked.id}`;
         lblBearing.textContent = locked.bearing || "000°";
 
         if (valMainSpeed) {
@@ -96,15 +97,15 @@ document.addEventListener("DOMContentLoaded", () => {
           valSpeedSubtext.textContent = `${locked.speed_ms || '0.0 m/s'} | ${locked.speed_px || '0 px/s'}`;
         }
       } else {
-        lockBadge.textContent = "MENUNGGU";
+        lockBadge.textContent = "MEMINDAI";
         lockBadge.style.color = "#06b6d4";
-        tValId.textContent = "KLIK OBJEK";
+        tValId.textContent = "MEMINDAI";
         tValClass.textContent = "--";
         tValConf.textContent = "--";
         tValSpeed.textContent = "0.0 km/h";
         tValBearing.textContent = "--";
         tValCoords.textContent = "--";
-        lblLockStatus.textContent = "KLIK OBJEK PADA LAYAR";
+        lblLockStatus.textContent = "MEMINDAI OBJEK BERGERAK...";
 
         if (valMainSpeed) {
           valMainSpeed.style.color = "#10b981";
@@ -121,9 +122,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const isUserInteracting = (document.activeElement === selectManualTarget);
 
         if (!isUserInteracting) {
-          let html = `<option value="">-- ${activeTargets.length > 0 ? "Pilih Objek dari Daftar" : "Menunggu Deteksi..."} --</option>`;
+          let html = `<option value="">-- Mode Otomatis (Objek Bergerak) --</option>`;
           activeTargets.forEach((t) => {
-            const isSel = (t.id === data.locked_target_id);
+            const isSel = (t.id === data.locked_target_id && data.is_manual_lock);
             html += `<option value="${t.id}" ${isSel ? "selected" : ""}>#${t.id} - ${t.class} (${t.speed_kmh} km/h)</option>`;
           });
           selectManualTarget.innerHTML = html;
@@ -131,16 +132,19 @@ document.addEventListener("DOMContentLoaded", () => {
       }
 
       // Update Target Lock Status & Unlock Button
-      if (data.locked_target_id !== null && data.locked_target_id !== undefined) {
+      if (data.is_manual_lock && data.locked_target_id !== null) {
         if (lblTargetSelected) {
-          lblTargetSelected.textContent = `TARGET #${data.locked_target_id}`;
+          lblTargetSelected.textContent = `TERKUNCI #${data.locked_target_id}`;
           lblTargetSelected.style.color = "#10b981";
         }
-        if (btnUnlockTarget) btnUnlockTarget.style.display = "inline-block";
+        if (btnUnlockTarget) {
+          btnUnlockTarget.style.display = "inline-block";
+          btnUnlockTarget.textContent = "🔄 KEMBALI KE OTOMATIS";
+        }
       } else {
         if (lblTargetSelected) {
-          lblTargetSelected.textContent = "BELUM ADA";
-          lblTargetSelected.style.color = "var(--text-dark)";
+          lblTargetSelected.textContent = data.locked_target_id ? `OTOMATIS #${data.locked_target_id}` : "OTOMATIS";
+          lblTargetSelected.style.color = "#06b6d4";
         }
         if (btnUnlockTarget) btnUnlockTarget.style.display = "none";
       }
@@ -301,12 +305,40 @@ document.addEventListener("DOMContentLoaded", () => {
 
   videoFeed.addEventListener("click", async (e) => {
     const rect = videoFeed.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
-    const normX = clickX / rect.width;
-    const normY = clickY / rect.height;
 
-    showClickRipple(clickX, clickY);
+    // Account for object-fit: contain letterbox/pillarbox
+    const naturalWidth = videoFeed.naturalWidth || 640;
+    const naturalHeight = videoFeed.naturalHeight || 480;
+    const elemWidth = rect.width;
+    const elemHeight = rect.height;
+
+    const imgRatio = naturalWidth / naturalHeight;
+    const elemRatio = elemWidth / elemHeight;
+
+    let renderWidth, renderHeight, offsetX, offsetY;
+    if (elemRatio > imgRatio) {
+      renderHeight = elemHeight;
+      renderWidth = elemHeight * imgRatio;
+      offsetX = (elemWidth - renderWidth) / 2;
+      offsetY = 0;
+    } else {
+      renderWidth = elemWidth;
+      renderHeight = elemWidth / imgRatio;
+      offsetX = 0;
+      offsetY = (elemHeight - renderHeight) / 2;
+    }
+
+    const clickX = e.clientX - rect.left - offsetX;
+    const clickY = e.clientY - rect.top - offsetY;
+
+    if (clickX < 0 || clickX > renderWidth || clickY < 0 || clickY > renderHeight) {
+      return; // Click outside the video pixels
+    }
+
+    const normX = Math.max(0, Math.min(1, clickX / renderWidth));
+    const normY = Math.max(0, Math.min(1, clickY / renderHeight));
+
+    showClickRipple(e.clientX - rect.left, e.clientY - rect.top);
 
     try {
       const res = await fetch("/api/select_target", {

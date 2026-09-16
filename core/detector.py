@@ -59,7 +59,7 @@ class YOLOTrackerEngine:
         self,
         model_name: str = "yolo11n.pt",
         tracker_type: str = "bytetrack.yaml",
-        conf_threshold: float = 0.35,
+        conf_threshold: float = 0.25,
         iou_threshold: float = 0.5,
         enable_trails: bool = True,
         enable_counter: bool = False,
@@ -82,6 +82,7 @@ class YOLOTrackerEngine:
         self.sensor_mode = sensor_mode
 
         self.locked_target_id: Optional[int] = None
+        self.is_user_locked: bool = False
         self.smooth_pip_center: Optional[Tuple[float, float]] = None
         self.last_frame_shape: Tuple[int, int] = (640, 480)
         self.latest_detections: List[DetectionResult] = []
@@ -117,6 +118,7 @@ class YOLOTrackerEngine:
             # If clicked inside bounding box: immediate match
             if x1 <= px <= x2 and y1 <= py <= y2:
                 self.locked_target_id = det.track_id
+                self.is_user_locked = True
                 self.smooth_pip_center = None
                 return det.track_id, det.class_name
 
@@ -127,17 +129,19 @@ class YOLOTrackerEngine:
                 min_dist = dist
                 best_det = det
 
-        # Fallback: if within reasonable click range (140 px radius)
-        if best_det is not None and min_dist < (140 ** 2):
+        # Fallback: if within reasonable click range (200 px radius)
+        if best_det is not None and min_dist < (200 ** 2):
             self.locked_target_id = best_det.track_id
+            self.is_user_locked = True
             self.smooth_pip_center = None
             return best_det.track_id, best_det.class_name
 
         return None, None
 
     def release_target(self):
-        """Unlocks target so no object is tracked until user selects one."""
+        """Unlocks target and returns to automatic moving target tracking."""
         self.locked_target_id = None
+        self.is_user_locked = False
         self.smooth_pip_center = None
 
     def set_line_coords(self, start: Tuple[int, int], end: Tuple[int, int]):
@@ -228,8 +232,8 @@ class YOLOTrackerEngine:
                         displacement = math.hypot(dx, dy)
                         speed_px = displacement
 
-                        # Speed calculation
-                        if displacement > 0.8:
+                        # Speed calculation for moving and walking objects
+                        if displacement > 0.2:
                             raw_px_s = displacement * effective_fps
                             # Add to rolling history
                             self.speed_history[track_id].append(raw_px_s)
@@ -277,14 +281,26 @@ class YOLOTrackerEngine:
         self.last_frame_shape = (fw, fh)
         self.latest_detections = detections
 
-        # Target Selection: ONLY follow the target specifically selected by the user
-        if self.locked_target_id is not None:
+        # Target Selection Logic (Hybrid: Auto-follows moving target by default, locks to user choice on demand)
+        is_manual_lock = False
+        if self.locked_target_id is not None and self.is_user_locked:
+            # User explicitly locked onto a target
             for det in detections:
                 if det.track_id == self.locked_target_id:
                     locked_det = det
+                    is_manual_lock = True
                     break
         else:
-            locked_det = None
+            # Automatic mode: follow the moving object (e.g. moving vehicle or walking person)
+            moving_dets = [d for d in detections if d.speed_kmh > 0.8 or d.speed_px_s > 2.0]
+            if moving_dets:
+                locked_det = max(moving_dets, key=lambda d: d.speed_kmh)
+            elif fastest_det is not None:
+                locked_det = fastest_det
+            elif len(detections) > 0:
+                locked_det = detections[0]
+            else:
+                locked_det = None
 
         self.visualizer.update(active_ids, centers)
 
@@ -302,10 +318,13 @@ class YOLOTrackerEngine:
 
             # 3. Draw bounding boxes with real-time SPEED badge
             for det in detections:
-                is_primary = (det.track_id is not None and det.track_id == self.locked_target_id)
+                if is_manual_lock:
+                    is_primary = (det.track_id is not None and det.track_id == self.locked_target_id)
+                else:
+                    is_primary = (locked_det is not None and det.track_id == locked_det.track_id)
                 self._draw_annotated_box(annotated_frame, det, is_primary)
 
-            # 4. Auto-Follow Zoom PiP Window for user-selected target
+            # 4. Auto-Follow Zoom PiP Window for moving / selected target
             if self.enable_pip_zoom and locked_det is not None:
                 self._draw_pip_zoom(annotated_frame, clean_sensor_frame, locked_det)
 
@@ -318,10 +337,12 @@ class YOLOTrackerEngine:
                 "id": det.track_id,
                 "class": det.class_name,
                 "speed_kmh": round(det.speed_kmh, 1),
-                "is_locked": (det.track_id == self.locked_target_id),
+                "is_locked": (det.track_id == (self.locked_target_id if is_manual_lock else (locked_det.track_id if locked_det else None))),
             }
             for det in detections if det.track_id is not None
         ]
+
+        effective_id = self.locked_target_id if is_manual_lock else (locked_det.track_id if locked_det else None)
 
         stats = {
             "fps": round(self.current_fps, 1),
@@ -333,19 +354,20 @@ class YOLOTrackerEngine:
             "zoom_factor": self.zoom_factor,
             "pixels_per_meter": self.pixels_per_meter,
             "classes": class_counts,
-            "locked_target_id": self.locked_target_id,
+            "locked_target_id": effective_id,
+            "is_manual_lock": is_manual_lock,
             "active_targets": active_targets,
             "locked_target": {
-                "id": self.locked_target_id,
-                "class": locked_det.class_name if locked_det else "MENCARI...",
+                "id": effective_id,
+                "class": locked_det.class_name if locked_det else "--",
                 "conf": f"{int(locked_det.confidence * 100)}%" if locked_det else "--",
                 "speed_kmh": f"{locked_det.speed_kmh:.1f} km/h" if locked_det else "0.0 km/h",
                 "speed_ms": f"{(locked_det.speed_kmh / 3.6):.1f} m/s" if locked_det else "0.0 m/s",
                 "speed_px": f"{locked_det.speed_px_s:.0f} px/s" if locked_det else "0 px/s",
                 "bearing": f"{int(locked_det.bearing)}°" if locked_det else "--",
                 "coords": f"X:{locked_det.center[0]} Y:{locked_det.center[1]}" if locked_det else "--",
-                "is_visible": (locked_det is not None),
-            } if self.locked_target_id is not None else None,
+                "is_manual": is_manual_lock,
+            } if locked_det else None,
         }
 
         return annotated_frame, detections, stats
@@ -391,7 +413,7 @@ class YOLOTrackerEngine:
         # SPEED & ID BADGE
         speed_text = f"{det.speed_kmh:.0f} km/h"
         if is_primary:
-            badge_text = f"🎯 TARGET #{det.track_id} {det.class_name} | {speed_text}"
+            badge_text = f"TARGET #{det.track_id} {det.class_name} | {speed_text}"
         else:
             badge_text = f"#{det.track_id} | {speed_text}" if det.track_id is not None else speed_text
 
@@ -491,11 +513,15 @@ class YOLOTrackerEngine:
         cv2.putText(frame, f"{self.current_fps:.1f} FPS", (260, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (6, 182, 212), 1, cv2.LINE_AA)
 
         if locked and locked.track_id is not None:
-            lock_str = f"TARGET TERPILIH: #{locked.track_id} ({locked.class_name}) | {locked.speed_kmh:.1f} KM/H"
-            cv2.putText(frame, lock_str, (fw - 380, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
+            if self.is_user_locked:
+                lock_str = f"TARGET TERKUNCI (USER): #{locked.track_id} ({locked.class_name}) | {locked.speed_kmh:.1f} KM/H"
+                cv2.putText(frame, lock_str, (fw - 410, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 240, 255), 1, cv2.LINE_AA)
+            else:
+                lock_str = f"MENGIKUTI OBJEK BERGERAK: #{locked.track_id} ({locked.class_name}) | {locked.speed_kmh:.1f} KM/H"
+                cv2.putText(frame, lock_str, (fw - 430, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 255, 120), 1, cv2.LINE_AA)
         elif self.locked_target_id is not None:
             lock_str = f"MENCARI TARGET #{self.locked_target_id}..."
             cv2.putText(frame, lock_str, (fw - 300, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (0, 165, 255), 1, cv2.LINE_AA)
         else:
-            hint_str = "KLIK OBJEK DI LAYAR UNTUK MENGIKUTI"
-            cv2.putText(frame, hint_str, (fw - 330, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (6, 182, 212), 1, cv2.LINE_AA)
+            hint_str = "MEMINDAI OBJEK BERGERAK..."
+            cv2.putText(frame, hint_str, (fw - 280, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (6, 182, 212), 1, cv2.LINE_AA)

@@ -45,7 +45,7 @@ class AppState:
         self.paused = False
         self.video_name = os.path.basename(self.source_path) if self.source_path else "sample_test.mp4"
 
-    def init_engine(self, model_name: str = "yolo11n.pt", conf: float = 0.35):
+    def init_engine(self, model_name: str = "yolo11n.pt", conf: float = 0.25):
         with self.lock:
             self.engine = YOLOTrackerEngine(
                 model_name=model_name,
@@ -246,6 +246,7 @@ def update_settings(payload: SettingsPayload):
             state.engine.sensor_mode = payload.sensor_mode
         if payload.lock_id is not None:
             state.engine.locked_target_id = payload.lock_id
+            state.engine.is_user_locked = True
         if payload.model_name and payload.model_name != state.engine.model_name:
             state.engine = YOLOTrackerEngine(
                 model_name=payload.model_name,
@@ -276,6 +277,7 @@ def select_target(payload: TargetSelectPayload):
 
         if payload.track_id is not None:
             state.engine.locked_target_id = payload.track_id
+            state.engine.is_user_locked = True
             state.engine.smooth_pip_center = None
             return {"status": "ok", "locked_id": payload.track_id}
         elif payload.norm_x is not None and payload.norm_y is not None:
