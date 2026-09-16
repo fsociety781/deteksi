@@ -1,0 +1,66 @@
+# ============================================
+# Python Gitignore - SpectraTrack AI Project
+# ============================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Virtualenv
+.v/
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.env
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+develop-eggs/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+
+# Unit test & coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# IDE / Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.sublime-project
+*.sublime-workspace
+
+# Operating System files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# Project-specific: User uploaded videos & temp artifacts
+uploads/*
+!uploads/.gitkeep
+scratch/
+*.log
+test_frame.jpg
+annotated_frame_*.jpg
+
+# Note: Model weights (.pt) and sample video (sample_test.mp4) 
+# can be ignored if using Git LFS or external hosting.
