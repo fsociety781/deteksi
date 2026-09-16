@@ -67,7 +67,11 @@ document.addEventListener("DOMContentLoaded", () => {
       valActiveTracks.textContent = data.active_objects || 0;
 
       if (data.video_name && lblMissionFile) {
-        lblMissionFile.textContent = data.video_name;
+        if (data.is_live) {
+          lblMissionFile.innerHTML = `<span class="pulse-dot-red" style="vertical-align: middle; margin-right: 4px;"></span> ${data.video_name}`;
+        } else {
+          lblMissionFile.textContent = data.video_name;
+        }
       }
 
       // Update Primary Target Focus Card
@@ -382,7 +386,80 @@ document.addEventListener("DOMContentLoaded", () => {
   if (btnReleaseTarget) btnReleaseTarget.addEventListener("click", unlockHandler);
   if (btnUnlockTarget) btnUnlockTarget.addEventListener("click", unlockHandler);
 
-  // 9. Video Upload (Drag & Drop)
+  // 9. Video Source Switcher Handlers
+  const btnSourceLive = document.getElementById("btnSourceLive");
+  const btnSourceSample = document.getElementById("btnSourceSample");
+  const btnSourceUpload = document.getElementById("btnSourceUpload");
+  const uploadPanelContainer = document.getElementById("uploadPanelContainer");
+  const btnConnectStream = document.getElementById("btnConnectStream");
+  const txtCustomStreamUrl = document.getElementById("txtCustomStreamUrl");
+
+  async function switchSource(sourceType, url = null) {
+    try {
+      if (lblMissionFile) {
+        lblMissionFile.textContent = "Menghubungkan ke sumber stream...";
+      }
+      const res = await fetch("/api/set_source", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_type: sourceType, url: url }),
+      });
+      const data = await res.json();
+      if (data.status === "ok") {
+        if (lblMissionFile) {
+          lblMissionFile.textContent = data.video_name;
+        }
+        const baseSrc = videoFeed.src.split("?")[0];
+        videoFeed.src = `${baseSrc}?t=${Date.now()}`;
+        fetchStats();
+      } else {
+        alert("Gagal menghubungkan ke feed video.");
+      }
+    } catch (e) {
+      console.error("Gagal mengganti sumber:", e);
+    }
+  }
+
+  if (btnSourceLive) {
+    btnSourceLive.addEventListener("click", () => {
+      document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
+      btnSourceLive.classList.add("active", "live-active");
+      if (uploadPanelContainer) uploadPanelContainer.style.display = "none";
+      const liveUrl = txtCustomStreamUrl ? txtCustomStreamUrl.value.trim() : "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8";
+      switchSource("live", liveUrl);
+    });
+  }
+
+  if (btnSourceSample) {
+    btnSourceSample.addEventListener("click", () => {
+      document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
+      btnSourceSample.classList.add("active");
+      if (uploadPanelContainer) uploadPanelContainer.style.display = "none";
+      switchSource("sample");
+    });
+  }
+
+  if (btnSourceUpload) {
+    btnSourceUpload.addEventListener("click", () => {
+      document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
+      btnSourceUpload.classList.add("active");
+      if (uploadPanelContainer) {
+        uploadPanelContainer.style.display = (uploadPanelContainer.style.display === "none") ? "block" : "none";
+      }
+    });
+  }
+
+  if (btnConnectStream && txtCustomStreamUrl) {
+    btnConnectStream.addEventListener("click", () => {
+      const url = txtCustomStreamUrl.value.trim();
+      if (!url) return;
+      document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
+      if (btnSourceLive) btnSourceLive.classList.add("active", "live-active");
+      switchSource("custom_url", url);
+    });
+  }
+
+  // 10. Video Upload (Drag & Drop)
   dropzone.addEventListener("click", () => videoFileInput.click());
 
   dropzone.addEventListener("dragover", (e) => {

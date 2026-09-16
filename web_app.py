@@ -24,12 +24,15 @@ os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 
+DEFAULT_LIVE_URL = "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8"
+
+
 class AppState:
     def __init__(self):
         self.lock = threading.RLock()
-        self.source_type = "video"
-        default_video = os.path.join(BASE_DIR, "sample_test.mp4")
-        self.source_path: Optional[str] = default_video if os.path.exists(default_video) else None
+        self.source_type = "live_stream"
+        self.live_stream_url = DEFAULT_LIVE_URL
+        self.source_path: Optional[str] = DEFAULT_LIVE_URL
         self.cap: Optional[cv2.VideoCapture] = None
         self.engine: Optional[YOLOTrackerEngine] = None
         self.latest_stats = {
@@ -40,10 +43,13 @@ class AppState:
             "tactical_mode": "all",
             "sensor_mode": "eo",
             "locked_target": None,
+            "source_type": "live_stream",
+            "is_live": True,
         }
         self.is_running = True
         self.paused = False
-        self.video_name = os.path.basename(self.source_path) if self.source_path else "sample_test.mp4"
+        self.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung"
+        self.consecutive_fails = 0
 
     def init_engine(self, model_name: str = "yolo11n.pt", conf: float = 0.25):
         with self.lock:
@@ -63,23 +69,36 @@ class AppState:
                     pass
                 self.cap = None
 
-            if self.source_path and os.path.exists(self.source_path):
-                # Try opening video file
+            if not self.source_path:
+                return False
+
+            is_network = (
+                self.source_path.startswith("http://")
+                or self.source_path.startswith("https://")
+                or self.source_path.startswith("rtsp://")
+            )
+
+            print(f"Membuka sumber video: {self.source_path}")
+            if is_network:
+                cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(self.source_path)
+            else:
+                if not os.path.exists(self.source_path):
+                    print(f"File tidak ditemukan: {self.source_path}")
+                    return False
                 cap = cv2.VideoCapture(self.source_path)
                 if not cap.isOpened():
                     cap = cv2.VideoCapture(self.source_path, cv2.CAP_FFMPEG)
 
-                if cap.isOpened():
-                    self.cap = cap
-                    ret, test_frame = self.cap.read()
-                    if ret and test_frame is not None:
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    print(f"Video capture aktif: {self.source_path}")
-                    return True
-                else:
-                    print(f"Gagal membuka video capture: {self.source_path}")
-                    return False
-            return False
+            if cap.isOpened():
+                self.cap = cap
+                self.consecutive_fails = 0
+                print(f"Video capture aktif: {self.source_path}")
+                return True
+            else:
+                print(f"Gagal membuka capture: {self.source_path}")
+                return False
 
 
 state = AppState()
@@ -158,8 +177,18 @@ def generate_mjpeg():
             if state.cap is not None and state.cap.isOpened():
                 ret, raw_frame = state.cap.read()
                 if not ret:
-                    state.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    ret, raw_frame = state.cap.read()
+                    if state.source_type == "video":
+                        state.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, raw_frame = state.cap.read()
+                    else:
+                        state.consecutive_fails += 1
+                        if state.consecutive_fails >= 5:
+                            print("Live stream terputus, mencoba menghubungkan ulang...")
+                            state.init_capture()
+                            state.consecutive_fails = 0
+                else:
+                    state.consecutive_fails = 0
+
                 if ret and raw_frame is not None:
                     frame = raw_frame.copy()
 
@@ -177,6 +206,8 @@ def generate_mjpeg():
             if state.engine is not None:
                 annotated_frame, detections, stats = state.engine.process_frame(frame)
                 stats["video_name"] = state.video_name
+                stats["source_type"] = state.source_type
+                stats["is_live"] = (state.source_type == "live_stream")
                 state.latest_stats = stats
             else:
                 annotated_frame = frame
@@ -297,6 +328,42 @@ def release_target():
         if state.engine is not None:
             state.engine.release_target()
     return {"status": "ok", "message": "Kunci target dilepaskan"}
+
+
+class SourceSelectPayload(BaseModel):
+    source_type: str  # "live" | "sample" | "custom_url"
+    url: Optional[str] = None
+
+
+@app.post("/api/set_source")
+def set_source(payload: SourceSelectPayload):
+    with state.lock:
+        if payload.source_type == "live":
+            url = payload.url or DEFAULT_LIVE_URL
+            state.source_type = "live_stream"
+            state.source_path = url
+            state.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung" if "MochToha" in url else f"🔴 LIVE: {url}"
+        elif payload.source_type == "sample":
+            default_video = os.path.join(BASE_DIR, "sample_test.mp4")
+            state.source_type = "video"
+            state.source_path = default_video
+            state.video_name = "sample_test.mp4"
+        elif payload.source_type == "custom_url" and payload.url:
+            state.source_type = "live_stream"
+            state.source_path = payload.url.strip()
+            state.video_name = f"🔴 STREAM: {state.source_path[:32]}..."
+
+        if state.engine is not None:
+            state.engine.release_target()
+            state.engine.visualizer.track_history.clear()
+
+        success = state.init_capture()
+        return {
+            "status": "ok" if success else "error",
+            "video_name": state.video_name,
+            "source_type": state.source_type,
+            "source_path": state.source_path,
+        }
 
 
 @app.post("/api/toggle_pause")

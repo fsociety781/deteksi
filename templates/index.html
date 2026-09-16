@@ -189,8 +189,33 @@
 
     <!-- Right Section: Video Upload & Dynamic Controls -->
     <aside class="sidebar-controls-section">
+      <!-- Source Selection Panel -->
+      <div class="control-panel">
+        <h2 class="panel-header">📡 SUMBER FEED VIDEO</h2>
+        <div class="source-toggle-group">
+          <button type="button" id="btnSourceLive" class="source-pill-btn active live-active" title="Streaming CCTV Live ATCS Moch Toha Bandung">
+            <span class="pulse-dot-red"></span> 🔴 LIVE CCTV (MOCH TOHA)
+          </button>
+          <button type="button" id="btnSourceSample" class="source-pill-btn" title="Gunakan Video Contoh Jembatan Jalan Raya">
+            🚗 SAMPEL JALAN RAYA
+          </button>
+          <button type="button" id="btnSourceUpload" class="source-pill-btn" title="Unggah Berkas Video Pribadi">
+            📁 UNGGAH BERKAS LOKAL
+          </button>
+        </div>
+
+        <!-- Custom M3U8 Stream URL Input -->
+        <div class="custom-stream-input-wrap">
+          <label style="font-size: 0.72rem; color: var(--text-dark); display: block; margin-bottom: 5px; font-weight: 600;">TAUTAN STREAMING M3U8 / RTSP:</label>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="txtCustomStreamUrl" class="custom-stream-input" placeholder="https://.../index.m3u8" value="https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8">
+            <button type="button" id="btnConnectStream" class="btn-connect-stream">HUBUNGKAN</button>
+          </div>
+        </div>
+      </div>
+
       <!-- Upload Panel -->
-      <div class="control-panel upload-container">
+      <div class="control-panel upload-container" id="uploadPanelContainer" style="display: none;">
         <h2 class="panel-header">📁 UNGGAH BERKAS VIDEO</h2>
         <input type="file" id="videoFileInput" accept="video/mp4,video/avi,video/mov,video/mkv" style="display: none;">
         <div class="upload-dropzone" id="dropzone">
