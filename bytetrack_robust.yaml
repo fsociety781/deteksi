@@ -1,0 +1,10 @@
+# Robust ByteTrack Configuration for CCTV Traffic & Occlusion Resistance
+# Optimized for crowded intersections, overlapping vehicles, and temporary lag
+
+tracker_type: bytetrack
+track_high_thresh: 0.22      # Threshold for first-stage high-confidence matching
+track_low_thresh: 0.08       # Low-score threshold to recover occluded / partially hidden objects
+new_track_thresh: 0.25       # Minimum score to initialize a new track (prevents ghost tracks)
+track_buffer: 50             # Keep lost tracks alive for up to 50 frames (~1.6s) to bridge occlusions
+match_thresh: 0.72           # Association IoU cost threshold; forgiving to shape deformations
+fuse_score: True             # Fuse detection confidence with motion similarity

@@ -1,4 +1,5 @@
 import math
+import os
 import time
 from collections import defaultdict, deque
 from typing import Dict, List, Optional, Tuple
@@ -31,6 +32,7 @@ class DetectionResult:
         speed_kmh: float = 0.0,
         speed_px_s: float = 0.0,
         bearing: float = 0.0,
+        is_occluded: bool = False,
     ):
         self.box = box  # (x1, y1, x2, y2)
         self.track_id = track_id
@@ -42,6 +44,7 @@ class DetectionResult:
         self.speed_kmh = speed_kmh  # Speed in km/h
         self.speed_px_s = speed_px_s  # Speed in px/s
         self.bearing = bearing    # heading angle in degrees (0-360)
+        self.is_occluded = is_occluded
 
     @property
     def center(self) -> Tuple[int, int]:
@@ -88,6 +91,19 @@ class YOLOTrackerEngine:
         self.latest_detections: List[DetectionResult] = []
 
         self.model = YOLO(model_name)
+        
+        # Load robust ByteTrack configuration for occlusion handling & lag resistance
+        robust_cfg = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bytetrack_robust.yaml")
+        if os.path.exists(robust_cfg):
+            self.tracker_type = os.path.abspath(robust_cfg)
+        else:
+            self.tracker_type = tracker_type
+
+        # Track Memory & Jitter Elimination Filter
+        self.track_memory: Dict[int, Dict] = {}
+        self.max_coast_frames: int = 24       # Keep track alive for ~0.8-1.0s during occlusion/lag
+        self.box_smooth_alpha: float = 0.72   # EMA smoothing factor: 0.72 (silky smooth, 0 jitter)
+
         self.visualizer = TrackVisualizer(max_trail_len=35)
         self.counter = LineCounter(start_point=(50, 300), end_point=(590, 300), line_color=(0, 220, 255))
         self.prev_positions: Dict[int, Tuple[int, int]] = {}
@@ -196,29 +212,64 @@ class YOLOTrackerEngine:
         fastest_det: Optional[DetectionResult] = None
         max_speed = 0.0
 
+        fh, fw = frame.shape[:2]
+        self.last_frame_shape = (fw, fh)
+
         if skip_inference and self.cached_detections:
-            detections = self.cached_detections
+            # During skipped inference frames (interleaved mode), smoothly extrapolate positions
+            detections = []
+            for d in self.cached_detections:
+                vx, vy = d.velocity
+                nx1 = int(round(d.box[0] + vx))
+                ny1 = int(round(d.box[1] + vy))
+                nx2 = int(round(d.box[2] + vx))
+                ny2 = int(round(d.box[3] + vy))
+                nx1 = max(0, min(fw - 20, nx1))
+                ny1 = max(0, min(fh - 20, ny1))
+                nx2 = max(nx1 + 10, min(fw - 1, nx2))
+                ny2 = max(ny1 + 10, min(fh - 1, ny2))
+
+                new_d = DetectionResult(
+                    box=(nx1, ny1, nx2, ny2),
+                    track_id=d.track_id,
+                    class_id=d.class_id,
+                    class_name=d.class_name,
+                    confidence=d.confidence,
+                    velocity=d.velocity,
+                    speed=d.speed,
+                    speed_kmh=d.speed_kmh,
+                    speed_px_s=d.speed_px_s,
+                    bearing=d.bearing,
+                    is_occluded=d.is_occluded,
+                )
+                detections.append(new_d)
+                if new_d.track_id is not None:
+                    centers[new_d.track_id] = new_d.center
+                    active_ids.append(new_d.track_id)
+                if new_d.speed_kmh > max_speed:
+                    max_speed = new_d.speed_kmh
+                    fastest_det = new_d
+
             class_counts = self.cached_class_counts
-            active_ids = self.cached_active_ids
-            for det in detections:
-                if det.track_id is not None:
-                    centers[det.track_id] = det.center
-                if det.speed_kmh > max_speed:
-                    max_speed = det.speed_kmh
-                    fastest_det = det
+            self.cached_detections = detections
         else:
             allowed_classes = CLASS_FILTERS.get(self.tactical_mode, None)
+
+            # Pass lower threshold to model.track so ByteTrack stage-2 can recover occluded objects
+            track_conf = max(0.10, min(0.18, self.conf_threshold * 0.6))
 
             results = self.model.track(
                 source=frame,
                 persist=True,
                 tracker=self.tracker_type,
-                conf=self.conf_threshold,
+                conf=track_conf,
                 iou=self.iou_threshold,
                 classes=allowed_classes,
                 imgsz=384,
                 verbose=False,
             )
+
+            seen_track_ids = set()
 
             if results and len(results) > 0 and results[0].boxes is not None:
                 boxes = results[0].boxes
@@ -226,12 +277,31 @@ class YOLOTrackerEngine:
 
                 for box in boxes:
                     xyxy = box.xyxy[0].cpu().numpy().astype(int)
-                    x1, y1, x2, y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                    raw_x1, raw_y1, raw_x2, raw_y2 = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
                     conf = float(box.conf[0].cpu().numpy())
                     cls_id = int(box.cls[0].cpu().numpy())
                     cls_name = names.get(cls_id, f"cls_{cls_id}").upper()
-
                     track_id = int(box.id[0].cpu().numpy()) if box.id is not None else None
+
+                    # If not tracked yet, ignore weak ghost detections below conf_threshold
+                    if track_id is None and conf < self.conf_threshold:
+                        continue
+
+                    # Jitter Elimination: Smooth bounding box coordinates using EMA
+                    if track_id is not None and track_id in self.track_memory:
+                        prev_b = self.track_memory[track_id]["box"]
+                        alpha = self.box_smooth_alpha
+                        x1 = int(round(alpha * raw_x1 + (1.0 - alpha) * prev_b[0]))
+                        y1 = int(round(alpha * raw_y1 + (1.0 - alpha) * prev_b[1]))
+                        x2 = int(round(alpha * raw_x2 + (1.0 - alpha) * prev_b[2]))
+                        y2 = int(round(alpha * raw_y2 + (1.0 - alpha) * prev_b[3]))
+                    else:
+                        x1, y1, x2, y2 = raw_x1, raw_y1, raw_x2, raw_y2
+
+                    x1 = max(0, min(fw - 20, x1))
+                    y1 = max(0, min(fh - 20, y1))
+                    x2 = max(x1 + 10, min(fw - 1, x2))
+                    y2 = max(y1 + 10, min(fh - 1, y2))
                     curr_center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
 
                     dx, dy = 0.0, 0.0
@@ -241,6 +311,7 @@ class YOLOTrackerEngine:
                     bearing = 0.0
 
                     if track_id is not None:
+                        seen_track_ids.add(track_id)
                         if track_id in self.prev_positions:
                             px, py = self.prev_positions[track_id]
                             dx = float(curr_center[0] - px)
@@ -249,7 +320,7 @@ class YOLOTrackerEngine:
                             speed_px = displacement
 
                             # Speed calculation for moving and walking objects
-                            if displacement > 0.1:
+                            if displacement > 0.15:
                                 raw_px_s = displacement * effective_fps
                                 self.speed_history[track_id].append(raw_px_s)
                                 smooth_px_s = sum(self.speed_history[track_id]) / len(self.speed_history[track_id])
@@ -268,6 +339,25 @@ class YOLOTrackerEngine:
                         active_ids.append(track_id)
                         centers[track_id] = curr_center
 
+                        # Update Track Memory with smoothed velocity
+                        prev_vel = self.track_memory.get(track_id, {}).get("velocity", (dx, dy))
+                        smooth_vx = 0.65 * dx + 0.35 * prev_vel[0]
+                        smooth_vy = 0.65 * dy + 0.35 * prev_vel[1]
+
+                        self.track_memory[track_id] = {
+                            "box": (x1, y1, x2, y2),
+                            "center": curr_center,
+                            "velocity": (smooth_vx, smooth_vy),
+                            "class_id": cls_id,
+                            "class_name": cls_name,
+                            "confidence": conf,
+                            "speed_px": speed_px,
+                            "speed_kmh": speed_kmh,
+                            "speed_px_s": speed_px_s,
+                            "bearing": bearing,
+                            "missed_frames": 0,
+                        }
+
                     det = DetectionResult(
                         box=(x1, y1, x2, y2),
                         track_id=track_id,
@@ -279,6 +369,7 @@ class YOLOTrackerEngine:
                         speed_kmh=speed_kmh,
                         speed_px_s=speed_px_s,
                         bearing=bearing,
+                        is_occluded=False,
                     )
                     detections.append(det)
                     class_counts[cls_name] = class_counts.get(cls_name, 0) + 1
@@ -286,6 +377,55 @@ class YOLOTrackerEngine:
                     if speed_kmh > max_speed:
                         max_speed = speed_kmh
                         fastest_det = det
+
+            # OCCLUSION / LAG RESISTANCE: Keep occluded tracks alive in memory
+            stale_track_ids = []
+            for tid, mem in list(self.track_memory.items()):
+                if tid not in seen_track_ids:
+                    mem["missed_frames"] += 1
+                    if mem["missed_frames"] <= self.max_coast_frames:
+                        # Extrapolate position using velocity vector with decay
+                        vx, vy = mem["velocity"]
+                        mem["velocity"] = (vx * 0.94, vy * 0.94)
+                        b = mem["box"]
+                        nx1 = int(round(b[0] + mem["velocity"][0]))
+                        ny1 = int(round(b[1] + mem["velocity"][1]))
+                        nx2 = int(round(b[2] + mem["velocity"][0]))
+                        ny2 = int(round(b[3] + mem["velocity"][1]))
+
+                        nx1 = max(0, min(fw - 20, nx1))
+                        ny1 = max(0, min(fh - 20, ny1))
+                        nx2 = max(nx1 + 10, min(fw - 1, nx2))
+                        ny2 = max(ny1 + 10, min(fh - 1, ny2))
+
+                        mem["box"] = (nx1, ny1, nx2, ny2)
+                        mem["center"] = (int((nx1 + nx2) / 2), int((ny1 + ny2) / 2))
+
+                        # Re-insert as occluded detection (keeps box alive and protects target lock)
+                        coasted_det = DetectionResult(
+                            box=(nx1, ny1, nx2, ny2),
+                            track_id=tid,
+                            class_id=mem["class_id"],
+                            class_name=mem["class_name"],
+                            confidence=max(0.20, mem["confidence"] * 0.9),
+                            velocity=mem["velocity"],
+                            speed=mem["speed_px"],
+                            speed_kmh=mem["speed_kmh"],
+                            speed_px_s=mem["speed_px_s"],
+                            bearing=mem["bearing"],
+                            is_occluded=True,
+                        )
+                        detections.append(coasted_det)
+                        active_ids.append(tid)
+                        centers[tid] = coasted_det.center
+                        class_counts[mem["class_name"]] = class_counts.get(mem["class_name"], 0) + 1
+                    else:
+                        stale_track_ids.append(tid)
+
+            for tid in stale_track_ids:
+                self.track_memory.pop(tid, None)
+                self.prev_positions.pop(tid, None)
+                self.speed_history.pop(tid, None)
 
             self.cached_detections = detections
             self.cached_class_counts = class_counts
@@ -392,9 +532,11 @@ class YOLOTrackerEngine:
         w, h = x2 - x1, y2 - y1
         cx, cy = det.center
 
-        # Color coding by speed & primary status
+        # Color coding by speed & primary status & occlusion
         if is_primary:
             color = (0, 0, 255)  # Red for user-selected target
+        elif det.is_occluded:
+            color = (0, 165, 255)  # Amber for occluded / coasting track
         elif det.speed_kmh > 80:
             color = (0, 69, 255)  # Orange-Red for fast moving
         elif det.speed_kmh > 40:
@@ -403,7 +545,16 @@ class YOLOTrackerEngine:
             color = (255, 200, 50)  # Cyan
 
         thickness = 2
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+        if det.is_occluded and not is_primary:
+            # Subtle visual indication that track is in memory hold
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 1, cv2.LINE_AA)
+            c_len = max(4, min(12, w // 4, h // 4))
+            cv2.line(frame, (x1, y1), (x1 + c_len, y1), color, 2)
+            cv2.line(frame, (x1, y1), (x1, y1 + c_len), color, 2)
+            cv2.line(frame, (x2, y2), (x2 - c_len, y2), color, 2)
+            cv2.line(frame, (x2, y2), (x2, y2 - c_len), color, 2)
+        else:
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
 
         # Tactical corner brackets & reticle if user selected this target
         if is_primary:
@@ -427,8 +578,11 @@ class YOLOTrackerEngine:
 
         # SPEED & ID BADGE
         speed_text = f"{det.speed_kmh:.0f} km/h"
+        hold_tag = " [HOLD]" if det.is_occluded else ""
         if is_primary:
-            badge_text = f"TARGET #{det.track_id} {det.class_name} | {speed_text}"
+            badge_text = f"TARGET #{det.track_id}{hold_tag} {det.class_name} | {speed_text}"
+        elif det.is_occluded:
+            badge_text = f"#{det.track_id} [HOLD] | {speed_text}"
         else:
             badge_text = f"#{det.track_id} | {speed_text}" if det.track_id is not None else speed_text
 
