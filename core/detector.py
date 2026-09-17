@@ -13,6 +13,7 @@ from .tracker import TrackVisualizer
 CLASS_FILTERS = {
     "all": None,
     "vehicle": [1, 2, 3, 5, 7],      # bicycle, car, motorcycle, bus, truck
+    "highway": [2, 3, 5, 7],          # car, motorcycle, bus, truck (kendaraan tol kecepatan tinggi)
     "person": [0],                    # person
     "drone_air": [4, 14, 15, 16],     # airplane, bird (aerial targets)
     "sentry": None,                   # perimeter monitor
@@ -71,6 +72,7 @@ class YOLOTrackerEngine:
         pixels_per_meter: float = 12.0,
         tactical_mode: str = "all",
         sensor_mode: str = "eo",
+        imgsz: int = 480,
     ):
         self.model_name = model_name
         self.tracker_type = tracker_type
@@ -83,6 +85,7 @@ class YOLOTrackerEngine:
         self.pixels_per_meter = pixels_per_meter
         self.tactical_mode = tactical_mode
         self.sensor_mode = sensor_mode
+        self.imgsz = imgsz
 
         self.locked_target_id: Optional[int] = None
         self.is_user_locked: bool = False
@@ -108,6 +111,7 @@ class YOLOTrackerEngine:
         self.visualizer = TrackVisualizer(max_trail_len=35)
         self.counter = LineCounter(start_point=(50, 300), end_point=(590, 300), line_color=(0, 220, 255))
         self.prev_positions: Dict[int, Tuple[int, int]] = {}
+        self.last_track_time: Dict[int, float] = {}
         
         # Smoothed speed history per track ID (stores recent speed values for rolling average)
         self.speed_history: Dict[int, deque] = defaultdict(lambda: deque(maxlen=8))
@@ -247,6 +251,8 @@ class YOLOTrackerEngine:
                 if new_d.track_id is not None:
                     centers[new_d.track_id] = new_d.center
                     active_ids.append(new_d.track_id)
+                    self.prev_positions[new_d.track_id] = new_d.center
+                    self.last_track_time[new_d.track_id] = now
                 if new_d.speed_kmh > max_speed:
                     max_speed = new_d.speed_kmh
                     fastest_det = new_d
@@ -266,7 +272,7 @@ class YOLOTrackerEngine:
                 conf=track_conf,
                 iou=self.iou_threshold,
                 classes=allowed_classes,
-                imgsz=384,
+                imgsz=self.imgsz,
                 verbose=False,
             )
 
@@ -299,14 +305,20 @@ class YOLOTrackerEngine:
                         prev_cx, prev_cy = prev_mem["center"]
                         prev_w = float(prev_mem["box"][2] - prev_mem["box"][0])
                         prev_h = float(prev_mem["box"][3] - prev_mem["box"][1])
+                        prev_speed = prev_mem.get("speed_kmh", 0.0)
 
-                        # Smooth center position (responsive tracking)
-                        smooth_cx = 0.72 * raw_cx + 0.28 * prev_cx
-                        smooth_cy = 0.72 * raw_cy + 0.28 * prev_cy
+                        # Velocity-Adaptive Smoothing:
+                        # High-speed highway vehicles (>50 km/h) require rapid response (alpha -> 0.94-0.96)
+                        # to eliminate bounding box lag. Slow/stationary objects use higher damping (0.72) to eliminate jitter.
+                        speed_factor = min(1.0, max(0.0, prev_speed / 80.0))
+                        alpha_c = 0.72 + 0.24 * speed_factor   # 0.72 at 0 km/h -> 0.96 at 80+ km/h
+                        alpha_dim = 0.20 + 0.35 * speed_factor
 
-                        # Smooth dimensions with high damping (completely stops box breathing/twitching)
-                        smooth_w = 0.82 * prev_w + 0.18 * raw_w
-                        smooth_h = 0.82 * prev_h + 0.18 * raw_h
+                        smooth_cx = alpha_c * raw_cx + (1.0 - alpha_c) * prev_cx
+                        smooth_cy = alpha_c * raw_cy + (1.0 - alpha_c) * prev_cy
+
+                        smooth_w = alpha_dim * raw_w + (1.0 - alpha_dim) * prev_w
+                        smooth_h = alpha_dim * raw_h + (1.0 - alpha_dim) * prev_h
 
                         x1 = int(round(smooth_cx - smooth_w / 2.0))
                         y1 = int(round(smooth_cy - smooth_h / 2.0))
@@ -336,9 +348,14 @@ class YOLOTrackerEngine:
                             displacement = math.hypot(dx, dy)
                             speed_px = displacement
 
+                            # Exact dt calculation: Prevents speed doubling/spiking under variable FPS
+                            dt_track = (now - self.last_track_time[track_id]) if track_id in self.last_track_time else (1.0 / effective_fps)
+                            if dt_track < 0.005 or dt_track > 2.0:
+                                dt_track = 1.0 / effective_fps
+
                             # Speed calculation for moving and walking objects
                             if displacement > 0.15:
-                                raw_px_s = displacement * effective_fps
+                                raw_px_s = displacement / dt_track
                                 self.speed_history[track_id].append(raw_px_s)
                                 smooth_px_s = sum(self.speed_history[track_id]) / len(self.speed_history[track_id])
                                 speed_px_s = smooth_px_s
@@ -353,6 +370,7 @@ class YOLOTrackerEngine:
                             bearing = (math.degrees(rad) + 360.0) % 360.0
 
                         self.prev_positions[track_id] = curr_center
+                        self.last_track_time[track_id] = now
                         active_ids.append(track_id)
                         centers[track_id] = curr_center
 
@@ -442,6 +460,7 @@ class YOLOTrackerEngine:
             for tid in stale_track_ids:
                 self.track_memory.pop(tid, None)
                 self.prev_positions.pop(tid, None)
+                self.last_track_time.pop(tid, None)
                 self.speed_history.pop(tid, None)
 
             self.cached_detections = detections
@@ -635,10 +654,17 @@ class YOLOTrackerEngine:
             self.prev_pip_target_id = target.track_id
         else:
             scx, scy = self.smooth_pip_center
-            # Subtle velocity lead: keeps moving cars from drifting toward edge of lens
-            lead_x = float(cx) + target.velocity[0] * 1.6
-            lead_y = float(cy) + target.velocity[1] * 1.6
-            self.smooth_pip_center = (0.76 * scx + 0.24 * lead_x, 0.76 * scy + 0.24 * lead_y)
+            # Velocity-adaptive camera panning: leads further and pans faster for fast highway vehicles
+            speed_factor = min(1.0, max(0.0, target.speed_kmh / 80.0))
+            lead_mult = 1.6 + 1.8 * speed_factor   # Predicts ahead based on speed
+            cam_alpha = 0.24 + 0.36 * speed_factor # Increases camera tracking speed up to 0.60 for fast cars
+
+            lead_x = float(cx) + target.velocity[0] * lead_mult
+            lead_y = float(cy) + target.velocity[1] * lead_mult
+            self.smooth_pip_center = (
+                (1.0 - cam_alpha) * scx + cam_alpha * lead_x,
+                (1.0 - cam_alpha) * scy + cam_alpha * lead_y,
+            )
 
         tcx, tcy = int(self.smooth_pip_center[0]), int(self.smooth_pip_center[1])
 

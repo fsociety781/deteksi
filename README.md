@@ -1,6 +1,6 @@
 # 🎯 VisionTrack AI - Object Detection & Multi-Object Tracking
 
-Proyek **Object Detection & Multi-Object Tracking** mutakhir berbasis Python menggunakan **Ultralytics YOLO (YOLO11 / YOLOv8)** terintegrasi dengan algoritma pelacak teruji **ByteTrack & BoT-SORT**.
+Proyek **Object Detection & Multi-Object Tracking** mutakhir berbasis Python menggunakan **Ultralytics YOLO (YOLO26 / YOLO11 / YOLOv8)** terintegrasi dengan algoritma pelacak teruji **ByteTrack & BoT-SORT**. Mendukung seluruh varian YOLO26 (Nano, Small, Medium, Large, Extra Large) dengan arsitektur *End-to-End NMS-Free*.
 
 Dilengkapi dengan dua mode penggunaan:
 1. **Desktop OpenCV Mode (`main.py`)**: Jendela visualisasi desktop interaktif dengan latensi ultra-rendah dan tombol shortcut (*hotkeys*).
@@ -104,4 +104,4 @@ Buka peramban (browser) Anda di:
 - **Live Video Feed**: Streaming MJPEG real-time dengan anotasi lengkap.
 - **KPI Real-time**: Jumlah objek aktif saat ini, FPS inferensi, serta jumlah total yang melintas (IN/OUT).
 - **Pilihan Sumber**: Beralih antara Webcam laptop atau Mengunggah berkas video sendiri melalui drag-and-drop.
-- **Interactive Controls**: Ubah *Confidence Threshold* (10% - 90%), ganti model YOLO (`yolo11n.pt`, `yolov8n.pt`, `yolo11s.pt`), aktifkan/nonaktifkan trails dan counter tanpa perlu restart server.
+- **Interactive Controls**: Ubah *Confidence Threshold* (10% - 90%), ganti model YOLO (`yolo26n.pt`, `yolo26s.pt`, `yolo26m.pt`, `yolo26l.pt`, `yolo26x.pt`, `yolo11n.pt`, `yolov8n.pt`), aktifkan/nonaktifkan trails dan counter tanpa perlu restart server.

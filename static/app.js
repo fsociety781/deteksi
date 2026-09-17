@@ -296,6 +296,20 @@ document.addEventListener("DOMContentLoaded", () => {
     updateSettings({ enable_trails: e.target.checked });
   });
 
+  const chkHighSpeed = document.getElementById("chkHighSpeed");
+  if (chkHighSpeed) {
+    chkHighSpeed.addEventListener("change", (e) => {
+      updateSettings({ high_speed_mode: e.target.checked });
+    });
+  }
+
+  const selectImgsz = document.getElementById("selectImgsz");
+  if (selectImgsz) {
+    selectImgsz.addEventListener("change", (e) => {
+      updateSettings({ imgsz: parseInt(e.target.value, 10) });
+    });
+  }
+
   // Interactive Target Selection: Click directly on Video Feed
   function showClickRipple(x, y) {
     if (!streamWrapper) return;

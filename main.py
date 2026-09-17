@@ -19,8 +19,8 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="yolo11n.pt",
-        help="YOLO model checkpoint (e.g. yolo11n.pt, yolov8n.pt, yolo11s.pt)",
+        default="yolo26n.pt",
+        help="YOLO model checkpoint (e.g. yolo26n.pt, yolo26s.pt, yolo26m.pt, yolo26l.pt, yolo26x.pt, yolo11n.pt, yolov8n.pt)",
     )
     parser.add_argument(
         "--tracker",

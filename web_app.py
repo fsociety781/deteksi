@@ -217,6 +217,7 @@ class AppState:
         }
         self.is_running = True
         self.paused = False
+        self.high_speed_mode = True  # Optimized for high-speed highway/toll traffic (100% full-rate AI)
         self.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung"
 
     def init_engine(self, model_name: str = "yolo26n.pt", conf: float = 0.25):
@@ -226,6 +227,7 @@ class AppState:
                 conf_threshold=conf,
                 tactical_mode="all",
                 sensor_mode="eo",
+                imgsz=480,
             )
 
     def init_capture(self) -> bool:
@@ -317,10 +319,9 @@ def generate_mjpeg():
             continue
 
         frame_idx += 1
-        # Interleaved AI Inference:
-        # Run YOLO inference every 2 frames, render cached annotations on intermediate frames.
-        # This doubles frame throughput to smooth 25 FPS without dropping HLS chunk boundaries!
-        skip_ai = (frame_idx % 2 != 0)
+        # In high_speed_mode (toll / highway traffic), run AI tracking on 100% of frames
+        # so fast vehicles with large displacements never lose ByteTrack IoU association!
+        skip_ai = False if state.high_speed_mode else (frame_idx % 2 != 0)
 
         with state.lock:
             if state.engine is not None:
@@ -331,6 +332,7 @@ def generate_mjpeg():
                 stats["video_name"] = state.video_name
                 stats["source_type"] = state.source_type
                 stats["is_live"] = (state.source_type == "live_stream")
+                stats["high_speed_mode"] = state.high_speed_mode
                 state.latest_stats = stats
             else:
                 annotated_frame = frame
@@ -377,11 +379,17 @@ class SettingsPayload(BaseModel):
     tactical_mode: Optional[str] = None
     sensor_mode: Optional[str] = None
     lock_id: Optional[int] = None
+    high_speed_mode: Optional[bool] = None
+    imgsz: Optional[int] = None
 
 
 @app.post("/api/settings")
 def update_settings(payload: SettingsPayload):
     with state.lock:
+        if payload.high_speed_mode is not None:
+            state.high_speed_mode = payload.high_speed_mode
+        if payload.imgsz is not None and state.engine is not None:
+            state.engine.imgsz = payload.imgsz
         if payload.conf_threshold is not None:
             state.engine.conf_threshold = payload.conf_threshold
         if payload.enable_trails is not None:
@@ -412,6 +420,7 @@ def update_settings(payload: SettingsPayload):
                 pixels_per_meter=state.engine.pixels_per_meter,
                 tactical_mode=state.engine.tactical_mode,
                 sensor_mode=state.engine.sensor_mode,
+                imgsz=state.engine.imgsz,
             )
 
     return {"status": "ok", "message": "Konfigurasi diperbarui"}

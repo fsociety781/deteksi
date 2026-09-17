@@ -62,5 +62,10 @@ scratch/
 test_frame.jpg
 annotated_frame_*.jpg
 
-# Note: Model weights (.pt) and sample video (sample_test.mp4) 
-# can be ignored if using Git LFS or external hosting.
+# Heavy model weights (>10MB / over GitHub limit)
+yolo26s.pt
+yolo26m.pt
+yolo26l.pt
+yolo26x.pt
+*.pt.tmp
+
