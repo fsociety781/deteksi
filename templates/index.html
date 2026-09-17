@@ -193,20 +193,50 @@
       <div class="control-panel">
         <h2 class="panel-header">📡 SUMBER FEED VIDEO</h2>
         <div class="source-toggle-group">
-          <button type="button" id="btnSourceLive" class="source-pill-btn active live-active" title="Streaming CCTV Live ATCS Moch Toha Bandung">
-            <span class="pulse-dot-red"></span> 🔴 LIVE CCTV (MOCH TOHA)
+          <button type="button" id="btnSourceLive" class="source-pill-btn active live-active" title="Streaming CCTV Live ATCS Bandung">
+            <span class="pulse-dot-red"></span> 🔴 LIVE CCTV ATCS BANDUNG
           </button>
           <button type="button" id="btnSourceSample" class="source-pill-btn" title="Gunakan Video Contoh Jembatan Jalan Raya">
-            🚗 SAMPEL JALAN RAYA
+            🚗 SAMPEL OFFLINE
           </button>
           <button type="button" id="btnSourceUpload" class="source-pill-btn" title="Unggah Berkas Video Pribadi">
             📁 UNGGAH BERKAS LOKAL
           </button>
         </div>
 
+        <!-- Presets Multi-CCTV ATCS Bandung -->
+        <div class="input-setting-group" id="groupBandungCctv" style="margin-top: 10px; margin-bottom: 8px;">
+          <div class="slider-caption-row">
+            <label for="selectBandungCctv" style="color: #00f0ff; font-weight: 700; font-size: 0.78rem;">🚦 TITIK CCTV ATCS KOTA BANDUNG</label>
+            <span class="slider-numeric-val" style="color: #10b981; font-size: 0.72rem;">20+ KAMERA AKTIF</span>
+          </div>
+          <select id="selectBandungCctv" class="custom-dropdown" style="border-color: rgba(0, 240, 255, 0.4); font-size: 0.82rem; background: rgba(10, 25, 40, 0.9);">
+            <option value="https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8" selected>🔴 SP Moch Toha (Bandung Selatan)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Pasteur/index.m3u8">🔴 SP Tol Pasteur (Pintu Masuk Tol)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Buahbatu/index.m3u8">🔴 SP Buahbatu (Simpang Soekarno Hatta)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Tamblong/index.m3u8">🔴 SP Tamblong (Dekat Asia Afrika)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Cikapayang/index.m3u8">🔴 SP Cikapayang Dago (Flyover Pasupati)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Samsat/index.m3u8">🔴 SP Samsat Kiaracondong</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Cibaduyut/index.m3u8">🔴 SP Cibaduyut (Sentra Sepatu)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Cipaganti/index.m3u8">🔴 SP Cipaganti</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/CihampelasPtz/index.m3u8">🔴 SP Cihampelas PTZ (Wisata Belanja)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/PaskalPTZ2/index.m3u8">🔴 SP Pasir Kaliki (Paskal 23)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Tamansari/index.m3u8">🔴 SP Tamansari (Dekat ITB)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Sulanjana/index.m3u8">🔴 SP Sulanjana (Dago Bawah)</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Batununggal/index.m3u8">🔴 SP Batununggal</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Inhoptank/index.m3u8">🔴 SP Inhoftank</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/PasarCaringin/index.m3u8">🔴 SP Pasar Caringin</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Lombok/index.m3u8">🔴 SP Lombok</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Cihapit/index.m3u8">🔴 SP Cihapit</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/AcehPramuka/index.m3u8">🔴 SP Aceh - Pramuka</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Anggrek/index.m3u8">🔴 SP Anggrek</option>
+            <option value="https://atcs-dishub.bandung.go.id:1990/Ruasriaulimijati/index.m3u8">🔴 Parkir Trunojoyo Riau (Limijati)</option>
+          </select>
+        </div>
+
         <!-- Custom M3U8 Stream URL Input -->
         <div class="custom-stream-input-wrap">
-          <label style="font-size: 0.72rem; color: var(--text-dark); display: block; margin-bottom: 5px; font-weight: 600;">TAUTAN STREAMING M3U8 / RTSP:</label>
+          <label style="font-size: 0.72rem; color: var(--text-dark); display: block; margin-bottom: 5px; font-weight: 600;">ATAU TAUTAN STREAMING M3U8 MANUAL:</label>
           <div style="display: flex; gap: 6px;">
             <input type="text" id="txtCustomStreamUrl" class="custom-stream-input" placeholder="https://.../index.m3u8" value="https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8">
             <button type="button" id="btnConnectStream" class="btn-connect-stream">HUBUNGKAN</button>

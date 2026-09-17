@@ -26,6 +26,29 @@ os.makedirs(UPLOADS_DIR, exist_ok=True)
 
 DEFAULT_LIVE_URL = "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8"
 
+BANDUNG_CCTV_PRESETS = [
+    {"id": "MochToha", "name": "🔴 SP Moch Toha (Bandung Selatan)", "url": "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8"},
+    {"id": "Pasteur", "name": "🔴 SP Tol Pasteur (Pintu Gerbang Tol)", "url": "https://atcs-dishub.bandung.go.id:1990/Pasteur/index.m3u8"},
+    {"id": "Buahbatu", "name": "🔴 SP Buahbatu (Simpang Soekarno Hatta)", "url": "https://atcs-dishub.bandung.go.id:1990/Buahbatu/index.m3u8"},
+    {"id": "Tamblong", "name": "🔴 SP Tamblong (Dekat Asia Afrika)", "url": "https://atcs-dishub.bandung.go.id:1990/Tamblong/index.m3u8"},
+    {"id": "Cikapayang", "name": "🔴 SP Cikapayang Dago (Flyover)", "url": "https://atcs-dishub.bandung.go.id:1990/Cikapayang/index.m3u8"},
+    {"id": "Samsat", "name": "🔴 SP Samsat Kiaracondong", "url": "https://atcs-dishub.bandung.go.id:1990/Samsat/index.m3u8"},
+    {"id": "Cibaduyut", "name": "🔴 SP Cibaduyut (Sentra Sepatu)", "url": "https://atcs-dishub.bandung.go.id:1990/Cibaduyut/index.m3u8"},
+    {"id": "Cipaganti", "name": "🔴 SP Cipaganti", "url": "https://atcs-dishub.bandung.go.id:1990/Cipaganti/index.m3u8"},
+    {"id": "CihampelasPtz", "name": "🔴 SP Cihampelas PTZ (Wisata Belanja)", "url": "https://atcs-dishub.bandung.go.id:1990/CihampelasPtz/index.m3u8"},
+    {"id": "PaskalPTZ2", "name": "🔴 SP Pasir Kaliki (Paskal 23)", "url": "https://atcs-dishub.bandung.go.id:1990/PaskalPTZ2/index.m3u8"},
+    {"id": "Tamansari", "name": "🔴 SP Tamansari (Dekat ITB)", "url": "https://atcs-dishub.bandung.go.id:1990/Tamansari/index.m3u8"},
+    {"id": "Sulanjana", "name": "🔴 SP Sulanjana (Dago Bawah)", "url": "https://atcs-dishub.bandung.go.id:1990/Sulanjana/index.m3u8"},
+    {"id": "Batununggal", "name": "🔴 SP Batununggal", "url": "https://atcs-dishub.bandung.go.id:1990/Batununggal/index.m3u8"},
+    {"id": "Inhoptank", "name": "🔴 SP Inhoftank", "url": "https://atcs-dishub.bandung.go.id:1990/Inhoptank/index.m3u8"},
+    {"id": "PasarCaringin", "name": "🔴 SP Pasar Caringin", "url": "https://atcs-dishub.bandung.go.id:1990/PasarCaringin/index.m3u8"},
+    {"id": "Lombok", "name": "🔴 SP Lombok", "url": "https://atcs-dishub.bandung.go.id:1990/Lombok/index.m3u8"},
+    {"id": "Cihapit", "name": "🔴 SP Cihapit", "url": "https://atcs-dishub.bandung.go.id:1990/Cihapit/index.m3u8"},
+    {"id": "AcehPramuka", "name": "🔴 SP Aceh - Pramuka", "url": "https://atcs-dishub.bandung.go.id:1990/AcehPramuka/index.m3u8"},
+    {"id": "Anggrek", "name": "🔴 SP Anggrek", "url": "https://atcs-dishub.bandung.go.id:1990/Anggrek/index.m3u8"},
+    {"id": "Ruasriaulimijati", "name": "🔴 Parkir Trunojoyo Riau (Limijati)", "url": "https://atcs-dishub.bandung.go.id:1990/Ruasriaulimijati/index.m3u8"},
+]
+
 
 class StreamManager:
     """
@@ -435,23 +458,31 @@ class SourceSelectPayload(BaseModel):
     url: Optional[str] = None
 
 
+@app.get("/api/cctv_presets")
+def get_cctv_presets():
+    return BANDUNG_CCTV_PRESETS
+
+
 @app.post("/api/set_source")
 def set_source(payload: SourceSelectPayload):
     with state.lock:
-        if payload.source_type == "live":
+        if payload.source_type in ("live", "custom_url"):
             url = payload.url or DEFAULT_LIVE_URL
             state.source_type = "live_stream"
-            state.source_path = url
-            state.video_name = "🔴 LIVE CCTV: ATCS Moch Toha Bandung" if "MochToha" in url else f"🔴 LIVE: {url}"
+            state.source_path = url.strip()
+            
+            # Lookup friendly preset name
+            matched_name = None
+            for p in BANDUNG_CCTV_PRESETS:
+                if p["url"].lower() == state.source_path.lower() or p["id"].lower() in state.source_path.lower():
+                    matched_name = p["name"]
+                    break
+            state.video_name = matched_name or f"🔴 STREAM: {state.source_path}"
         elif payload.source_type == "sample":
             default_video = os.path.join(BASE_DIR, "sample_test.mp4")
             state.source_type = "video"
             state.source_path = default_video
-            state.video_name = "sample_test.mp4"
-        elif payload.source_type == "custom_url" and payload.url:
-            state.source_type = "live_stream"
-            state.source_path = payload.url.strip()
-            state.video_name = f"🔴 STREAM: {state.source_path[:32]}..."
+            state.video_name = "🚗 Sampel Jalan Raya (Offline)"
 
         if state.engine is not None:
             state.engine.release_target()

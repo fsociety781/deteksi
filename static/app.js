@@ -393,6 +393,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const uploadPanelContainer = document.getElementById("uploadPanelContainer");
   const btnConnectStream = document.getElementById("btnConnectStream");
   const txtCustomStreamUrl = document.getElementById("txtCustomStreamUrl");
+  const selectBandungCctv = document.getElementById("selectBandungCctv");
+  const groupBandungCctv = document.getElementById("groupBandungCctv");
 
   async function switchSource(sourceType, url = null) {
     try {
@@ -420,12 +422,25 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   }
 
+  // Handle Bandung CCTV Presets selection
+  if (selectBandungCctv) {
+    selectBandungCctv.addEventListener("change", (e) => {
+      const url = e.target.value;
+      if (txtCustomStreamUrl) txtCustomStreamUrl.value = url;
+      document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
+      if (btnSourceLive) btnSourceLive.classList.add("active", "live-active");
+      if (uploadPanelContainer) uploadPanelContainer.style.display = "none";
+      switchSource("live", url);
+    });
+  }
+
   if (btnSourceLive) {
     btnSourceLive.addEventListener("click", () => {
       document.querySelectorAll(".source-pill-btn").forEach((b) => b.classList.remove("active", "live-active"));
       btnSourceLive.classList.add("active", "live-active");
       if (uploadPanelContainer) uploadPanelContainer.style.display = "none";
-      const liveUrl = txtCustomStreamUrl ? txtCustomStreamUrl.value.trim() : "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8";
+      if (groupBandungCctv) groupBandungCctv.style.display = "block";
+      const liveUrl = selectBandungCctv ? selectBandungCctv.value : (txtCustomStreamUrl ? txtCustomStreamUrl.value.trim() : "https://atcs-dishub.bandung.go.id:1990/MochToha/index.m3u8");
       switchSource("live", liveUrl);
     });
   }

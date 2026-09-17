@@ -87,6 +87,7 @@ class YOLOTrackerEngine:
         self.locked_target_id: Optional[int] = None
         self.is_user_locked: bool = False
         self.smooth_pip_center: Optional[Tuple[float, float]] = None
+        self.prev_pip_target_id: Optional[int] = None
         self.last_frame_shape: Tuple[int, int] = (640, 480)
         self.latest_detections: List[DetectionResult] = []
 
@@ -287,14 +288,30 @@ class YOLOTrackerEngine:
                     if track_id is None and conf < self.conf_threshold:
                         continue
 
-                    # Jitter Elimination: Smooth bounding box coordinates using EMA
+                    # Jitter & Pulsing Elimination: Center-Dimension Decomposed Stabilization
+                    raw_w = float(raw_x2 - raw_x1)
+                    raw_h = float(raw_y2 - raw_y1)
+                    raw_cx = float(raw_x1 + raw_x2) / 2.0
+                    raw_cy = float(raw_y1 + raw_y2) / 2.0
+
                     if track_id is not None and track_id in self.track_memory:
-                        prev_b = self.track_memory[track_id]["box"]
-                        alpha = self.box_smooth_alpha
-                        x1 = int(round(alpha * raw_x1 + (1.0 - alpha) * prev_b[0]))
-                        y1 = int(round(alpha * raw_y1 + (1.0 - alpha) * prev_b[1]))
-                        x2 = int(round(alpha * raw_x2 + (1.0 - alpha) * prev_b[2]))
-                        y2 = int(round(alpha * raw_y2 + (1.0 - alpha) * prev_b[3]))
+                        prev_mem = self.track_memory[track_id]
+                        prev_cx, prev_cy = prev_mem["center"]
+                        prev_w = float(prev_mem["box"][2] - prev_mem["box"][0])
+                        prev_h = float(prev_mem["box"][3] - prev_mem["box"][1])
+
+                        # Smooth center position (responsive tracking)
+                        smooth_cx = 0.72 * raw_cx + 0.28 * prev_cx
+                        smooth_cy = 0.72 * raw_cy + 0.28 * prev_cy
+
+                        # Smooth dimensions with high damping (completely stops box breathing/twitching)
+                        smooth_w = 0.82 * prev_w + 0.18 * raw_w
+                        smooth_h = 0.82 * prev_h + 0.18 * raw_h
+
+                        x1 = int(round(smooth_cx - smooth_w / 2.0))
+                        y1 = int(round(smooth_cy - smooth_h / 2.0))
+                        x2 = int(round(smooth_cx + smooth_w / 2.0))
+                        y2 = int(round(smooth_cy + smooth_h / 2.0))
                     else:
                         x1, y1, x2, y2 = raw_x1, raw_y1, raw_x2, raw_y2
 
@@ -603,22 +620,34 @@ class YOLOTrackerEngine:
 
     def _draw_pip_zoom(self, canvas: np.ndarray, clean_source: np.ndarray, target: DetectionResult):
         """
-        Renders Picture-in-Picture Auto-Follow Zoom with live SPEED telemetry HUD.
+        Renders Picture-in-Picture Auto-Follow Zoom with adaptive framing, 
+        smooth target camera panning, and high-precision tactical reticles.
         """
         fh, fw = canvas.shape[:2]
         cx, cy = target.center
+        tx1, ty1, tx2, ty2 = target.box
+        target_w = max(18, tx2 - tx1)
+        target_h = max(18, ty2 - ty1)
 
-        # Smooth camera movement
-        if self.smooth_pip_center is None:
+        # 1. Camera Panning: Instant reset on target change, smooth lead tracking on movement
+        if self.prev_pip_target_id != target.track_id or self.smooth_pip_center is None:
             self.smooth_pip_center = (float(cx), float(cy))
+            self.prev_pip_target_id = target.track_id
         else:
             scx, scy = self.smooth_pip_center
-            self.smooth_pip_center = (0.75 * scx + 0.25 * cx, 0.75 * scy + 0.25 * cy)
+            # Subtle velocity lead: keeps moving cars from drifting toward edge of lens
+            lead_x = float(cx) + target.velocity[0] * 1.6
+            lead_y = float(cy) + target.velocity[1] * 1.6
+            self.smooth_pip_center = (0.76 * scx + 0.24 * lead_x, 0.76 * scy + 0.24 * lead_y)
 
         tcx, tcy = int(self.smooth_pip_center[0]), int(self.smooth_pip_center[1])
 
-        crop_half_w = max(30, int(fw / (self.zoom_factor * 2)))
-        crop_half_h = max(24, int(fh / (self.zoom_factor * 2)))
+        # 2. Smart Optical Framing: Automatically scales crop window based on vehicle size
+        # Ensures large buses/trucks and small motorbikes are both perfectly framed with margin
+        crop_w = max(int(target_w * 2.0), int(fw / (self.zoom_factor * 1.8)))
+        crop_h = max(int(target_h * 2.0), int(fh / (self.zoom_factor * 1.8)))
+        crop_half_w = max(28, crop_w // 2)
+        crop_half_h = max(24, crop_h // 2)
 
         x1_crop = max(0, tcx - crop_half_w)
         y1_crop = max(0, tcy - crop_half_h)
@@ -632,13 +661,13 @@ class YOLOTrackerEngine:
         if cropped.size == 0:
             return
 
-        pip_w = int(fw * 0.36)
-        pip_h = int(fh * 0.32)
+        pip_w = int(fw * 0.38)
+        pip_h = int(fh * 0.33)
 
         try:
-            zoomed = cv2.resize(cropped, (pip_w, pip_h), interpolation=cv2.INTER_LINEAR)
+            zoomed = cv2.resize(cropped, (pip_w, pip_h), interpolation=cv2.INTER_CUBIC)
         except Exception:
-            return
+            zoomed = cv2.resize(cropped, (pip_w, pip_h), interpolation=cv2.INTER_LINEAR)
 
         margin = 12
         top_y = 44
@@ -646,29 +675,71 @@ class YOLOTrackerEngine:
         bottom_y = top_y + pip_h
         right_x = left_x + pip_w
 
+        # Render zoomed feed onto canvas
         canvas[top_y:bottom_y, left_x:right_x] = zoomed
 
-        # Red Border
-        border_color = (0, 0, 255)
-        cv2.rectangle(canvas, (left_x, top_y), (right_x, bottom_y), border_color, 2, cv2.LINE_AA)
+        # 3. Draw High-Precision Target Bounding Box INSIDE the Zoom Window!
+        crop_span_x = max(1, x2_crop - x1_crop)
+        crop_span_y = max(1, y2_crop - y1_crop)
+        scale_x = pip_w / crop_span_x
+        scale_y = pip_h / crop_span_y
 
-        # Center Reticle
-        pip_cx = left_x + pip_w // 2
-        pip_cy = top_y + pip_h // 2
-        ret_len = 8
-        cv2.line(canvas, (pip_cx - ret_len, pip_cy), (pip_cx + ret_len, pip_cy), (0, 0, 255), 1, cv2.LINE_AA)
-        cv2.line(canvas, (pip_cx, pip_cy - ret_len), (pip_cx, pip_cy + ret_len), (0, 0, 255), 1, cv2.LINE_AA)
-        cv2.circle(canvas, (pip_cx, pip_cy), 12, (0, 0, 255), 1, cv2.LINE_AA)
+        z_bx1 = left_x + int((tx1 - x1_crop) * scale_x)
+        z_by1 = top_y + int((ty1 - y1_crop) * scale_y)
+        z_bx2 = left_x + int((tx2 - x1_crop) * scale_x)
+        z_by2 = top_y + int((ty2 - y1_crop) * scale_y)
 
-        # Header Badge
-        tag_str = f"ZOOM TARGET {self.zoom_factor:.1f}X | #{target.track_id} {target.class_name}"
-        cv2.rectangle(canvas, (left_x, top_y), (left_x + 245, top_y + 18), (10, 15, 22), -1)
-        cv2.putText(canvas, tag_str, (left_x + 5, top_y + 13), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 220, 255), 1, cv2.LINE_AA)
+        # Clamping within pip viewport
+        z_bx1 = max(left_x + 1, min(right_x - 6, z_bx1))
+        z_by1 = max(top_y + 22, min(bottom_y - 24, z_by1))
+        z_bx2 = max(z_bx1 + 6, min(right_x - 2, z_bx2))
+        z_by2 = max(z_by1 + 6, min(bottom_y - 22, z_by2))
+
+        # Distinct tactical colors inside lens
+        if target.is_occluded:
+            lens_color = (0, 165, 255)  # Amber
+        elif self.is_user_locked:
+            lens_color = (0, 255, 120)  # High-vis Green
+        else:
+            lens_color = (0, 240, 255)  # Cyan
+
+        # Draw vehicle framing box inside lens
+        cv2.rectangle(canvas, (z_bx1, z_by1), (z_bx2, z_by2), lens_color, 1, cv2.LINE_AA)
+        zw, zh = z_bx2 - z_bx1, z_by2 - z_by1
+        zc_len = max(4, min(14, zw // 3, zh // 3))
+        # Lens Corner brackets
+        cv2.line(canvas, (z_bx1, z_by1), (z_bx1 + zc_len, z_by1), lens_color, 2)
+        cv2.line(canvas, (z_bx1, z_by1), (z_bx1, z_by1 + zc_len), lens_color, 2)
+        cv2.line(canvas, (z_bx2, z_by1), (z_bx2 - zc_len, z_by1), lens_color, 2)
+        cv2.line(canvas, (z_bx2, z_by1), (z_bx2, z_by1 + zc_len), lens_color, 2)
+        cv2.line(canvas, (z_bx1, z_by2), (z_bx1 + zc_len, z_by2), lens_color, 2)
+        cv2.line(canvas, (z_bx1, z_by2), (z_bx1, z_by2 - zc_len), lens_color, 2)
+        cv2.line(canvas, (z_bx2, z_by2), (z_bx2 - zc_len, z_by2), lens_color, 2)
+        cv2.line(canvas, (z_bx2, z_by2), (z_bx2, z_by2 - zc_len), lens_color, 2)
+
+        # Precision target center crosshair inside box
+        z_cx = (z_bx1 + z_bx2) // 2
+        z_cy = (z_by1 + z_by2) // 2
+        cv2.circle(canvas, (z_cx, z_cy), 3, (0, 0, 255), -1, cv2.LINE_AA)
+        cv2.circle(canvas, (z_cx, z_cy), 8, lens_color, 1, cv2.LINE_AA)
+
+        # 4. Tactical Zoom Window Frame & HUD
+        cv2.rectangle(canvas, (left_x, top_y), (right_x, bottom_y), (10, 15, 22), 2, cv2.LINE_AA)
+        cv2.rectangle(canvas, (left_x - 1, top_y - 1), (right_x + 1, bottom_y + 1), (0, 240, 255), 1, cv2.LINE_AA)
+
+        # Top Header Pill
+        status_tag = "HOLD" if target.is_occluded else ("LOCKED" if self.is_user_locked else "AUTO")
+        tag_str = f"TARGET ZOOM [{status_tag}] #{target.track_id} {target.class_name}"
+        cv2.rectangle(canvas, (left_x, top_y), (right_x, top_y + 20), (10, 15, 22), -1)
+        cv2.putText(canvas, tag_str, (left_x + 8, top_y + 14), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+        # Pulse indicator dot
+        dot_color = (0, 165, 255) if target.is_occluded else (0, 255, 120)
+        cv2.circle(canvas, (right_x - 12, top_y + 10), 4, dot_color, -1, cv2.LINE_AA)
 
         # Bottom Speed Banner inside Zoom Window
         speed_banner = f"KECEPATAN: {target.speed_kmh:.1f} KM/H  ({target.speed_kmh / 3.6:.1f} m/s)"
         cv2.rectangle(canvas, (left_x, bottom_y - 20), (right_x, bottom_y), (10, 15, 22), -1)
-        cv2.putText(canvas, speed_banner, (left_x + 8, bottom_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 100), 1, cv2.LINE_AA)
+        cv2.putText(canvas, speed_banner, (left_x + 8, bottom_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.39, (0, 255, 120), 1, cv2.LINE_AA)
 
     def _draw_overlay_hud(self, frame: np.ndarray, track_count: int, locked: Optional[DetectionResult]):
         fh, fw = frame.shape[:2]
